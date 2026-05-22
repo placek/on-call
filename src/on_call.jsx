@@ -753,6 +753,22 @@ export default function OnCall() {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
+  // Past runs — appended when a shift ends. Persisted to localStorage.
+  const [history, setHistory] = useState(() => {
+    try {
+      const raw = localStorage.getItem('oncall:history');
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('oncall:history', JSON.stringify(history)); } catch {}
+  }, [history]);
+
+  // Toggle for the history list rendered at the very bottom of the page.
+  const [showHistory, setShowHistory] = useState(false);
+
   const ticket = useMemo(
     () => tickets.find(t => t.uid === activeUid) || null,
     [tickets, activeUid]
@@ -878,6 +894,18 @@ export default function OnCall() {
       setTickets(remainingInbox);
       setNextHost(genHost());
       setPhase('over');
+      const reason = newStrikes <= 0 ? 'paged' : 'depleted';
+      setHistory(prev => [
+        ...prev,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          credits: newCredits,
+          resolved: nextResolved,
+          rejected: 3 - newStrikes,
+          reason,
+          at: new Date().toISOString(),
+        },
+      ]);
     } else {
       setTickets([...remainingInbox, rollTicket(nextResolved)]);
     }
@@ -1101,8 +1129,180 @@ export default function OnCall() {
       )}
 
       <ThemeSwitch theme={theme} onChange={setTheme} />
+      <HistoryPanel history={history} open={showHistory} onToggle={() => setShowHistory(v => !v)} />
     </div>
   );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  History panel — anchored at the very bottom. A pill button toggles a list
+//  of past shifts (highest velocity first). Click an entry to inspect, or
+//  hit the trash to wipe the whole log from localStorage.
+// ─────────────────────────────────────────────────────────────────────────────
+function HistoryPanel({ history, open, onToggle }) {
+  const sorted = useMemo(
+    () => [...history].sort((a, b) => b.credits - a.credits),
+    [history]
+  );
+  return (
+    <div style={{
+      maxWidth: '720px',
+      margin: '6px auto 14px',
+      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'center' }}>
+        <button
+          onClick={onToggle}
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '8px',
+            padding: '6px 14px',
+            background: open ? C.panel2 : C.trackerBg,
+            color: open ? C.text : C.muted,
+            border: `1px solid ${C.trackerBorder}`,
+            borderRadius: '999px',
+            fontSize: '0.7rem',
+            fontWeight: 600,
+            letterSpacing: '0.02em',
+            cursor: 'pointer',
+            transition: 'background 0.15s ease, color 0.15s ease',
+          }}
+        >
+          <span style={{ fontSize: '0.65rem', color: C.faint }}>
+            {open ? '▾' : '▸'}
+          </span>
+          previous runs
+          <span style={{
+            fontSize: '0.6rem',
+            fontWeight: 500,
+            color: C.faint,
+          }}>
+            ({history.length})
+          </span>
+        </button>
+      </div>
+
+      {open && (
+        <div style={{
+          marginTop: '10px',
+          background: C.trackerBg,
+          border: `1px solid ${C.trackerBorder}`,
+          borderRadius: '8px',
+          overflow: 'hidden',
+        }}>
+          {/* table header */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: '32px 1fr 80px 70px 70px 110px',
+            gap: '8px',
+            padding: '8px 12px',
+            borderBottom: `1px solid ${C.trackerBorder}`,
+            fontSize: '0.55rem',
+            letterSpacing: '0.08em',
+            fontWeight: 600,
+            color: C.faint,
+          }}>
+            <span>#</span>
+            <span>velocity</span>
+            <span style={{ textAlign: 'right' }}>resolved</span>
+            <span style={{ textAlign: 'right' }}>rejected</span>
+            <span style={{ textAlign: 'right' }}>ended</span>
+            <span style={{ textAlign: 'right' }}>date</span>
+          </div>
+
+          {sorted.length === 0 ? (
+            <div style={{
+              padding: '18px 12px',
+              fontSize: '0.72rem',
+              color: C.faint,
+              fontStyle: 'italic',
+              textAlign: 'center',
+            }}>
+              no previous runs yet — finish a shift to see it here
+            </div>
+          ) : (
+            sorted.map((r, i) => {
+              const isTop = i === 0;
+              return (
+                <div
+                  key={r.id}
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: '32px 1fr 80px 70px 70px 110px',
+                    gap: '8px',
+                    padding: '8px 12px',
+                    fontSize: '0.72rem',
+                    borderBottom: i === sorted.length - 1 ? 'none' : `1px solid ${C.trackerBorder}`,
+                    background: isTop ? C.panel2 : 'transparent',
+                    color: C.text,
+                  }}
+                >
+                  <span style={{
+                    color: isTop ? C.success : C.faint,
+                    fontVariantNumeric: 'tabular-nums',
+                    fontWeight: isTop ? 700 : 500,
+                  }}>
+                    {isTop ? '★' : i + 1}
+                  </span>
+                  <span style={{
+                    color: isTop ? C.success : C.text,
+                    fontWeight: 700,
+                    fontVariantNumeric: 'tabular-nums',
+                  }}>
+                    {r.credits}
+                  </span>
+                  <span style={{
+                    textAlign: 'right',
+                    color: C.muted,
+                    fontVariantNumeric: 'tabular-nums',
+                  }}>
+                    {r.resolved}
+                  </span>
+                  <span style={{
+                    textAlign: 'right',
+                    color: r.rejected >= 3 ? C.danger : C.muted,
+                    fontVariantNumeric: 'tabular-nums',
+                  }}>
+                    {r.rejected}
+                  </span>
+                  <span style={{
+                    textAlign: 'right',
+                    color: r.reason === 'paged' ? C.danger : C.muted,
+                    fontSize: '0.65rem',
+                  }}>
+                    {r.reason}
+                  </span>
+                  <span style={{
+                    textAlign: 'right',
+                    color: C.faint,
+                    fontSize: '0.65rem',
+                    fontVariantNumeric: 'tabular-nums',
+                  }}>
+                    {formatRunDate(r.at)}
+                  </span>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatRunDate(iso) {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return iso;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
