@@ -18,10 +18,6 @@ const FONTS_CSS = `
     0%, 100% { opacity: 1; }
     50%      { opacity: 0.55; }
   }
-  @keyframes glow {
-    0%, 100% { box-shadow: 0 0 14px rgba(248, 81, 73, 0.20); }
-    50%      { box-shadow: 0 0 22px rgba(248, 81, 73, 0.40); }
-  }
 
   html, body {
     background: var(--bg);
@@ -486,9 +482,7 @@ function HandCard({ stack, card, remaining, blocked, deployFull, deployed, phase
         opacity: dimmed ? 0.45 : 1,
         boxShadow: showBox && bonusFiresNow
           ? '0 0 10px rgba(210, 153, 34, 0.18)'
-          : showBox
-            ? '0 2px 8px rgba(0,0,0,0.35)'
-            : 'none',
+          : 'none',
         overflow: 'hidden',
         fontFamily: "'JetBrains Mono', monospace",
       }}
@@ -614,8 +608,7 @@ function DeployPackage({ deployed, preview, blocked }) {
           isBlocked ? C.danger :
           isFaulty  ? C.danger :
           C.borderHi;
-        const shadow =
-          showBox ? '0 0 8px rgba(248,81,73,0.20)' : 'none';
+        const shadow = 'none';
 
         return (
           <div
@@ -1134,7 +1127,6 @@ function ThemeSwitch({ theme, onChange }) {
         border: `1px solid ${C.trackerBorder}`,
         borderRadius: '999px',
         fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-        boxShadow: '0 1px 0 rgba(255,255,255,0.04) inset',
       }}>
         <ThemeOption label="Dark"  icon="●" active={theme === 'dark'}  onClick={() => onChange('dark')}  />
         <ThemeOption label="Light" icon="○" active={theme === 'light'} onClick={() => onChange('light')} />
@@ -1203,7 +1195,6 @@ function TrackerPanel({ children }) {
       borderRadius: '10px',
       overflow: 'hidden',
       marginBottom: '10px',
-      boxShadow: '0 6px 32px rgba(0,0,0,0.5), 0 1px 0 rgba(255,255,255,0.04) inset',
     }}>
       {children}
     </div>
@@ -1219,7 +1210,7 @@ function TrackerHeader({ onShift }) {
       display: 'flex',
       alignItems: 'center',
       padding: '8px 12px',
-      background: `linear-gradient(180deg, ${C.trackerHead}, ${C.trackerBg})`,
+      background: C.trackerHead,
       borderBottom: `1px solid ${C.trackerBorder}`,
       gap: '10px',
     }}>
@@ -1250,14 +1241,13 @@ function TrackerHeader({ onShift }) {
           width: '14px',
           height: '14px',
           borderRadius: '3px',
-          background: `linear-gradient(135deg, ${C.accent}, #1f6feb)`,
+          background: C.accent,
           display: 'inline-flex',
           alignItems: 'center',
           justifyContent: 'center',
           color: '#fff',
           fontWeight: 900,
           fontSize: '0.55rem',
-          boxShadow: '0 1px 2px rgba(0,0,0,0.4)',
           flexShrink: 0,
         }}>T</span>
         <span style={{ fontWeight: 600, color: C.text }}>Triage</span>
@@ -1386,7 +1376,6 @@ function TerminalPanel({ children }) {
       border: `1px solid ${C.termBorder}`,
       borderRadius: '10px',
       overflow: 'hidden',
-      boxShadow: '0 6px 32px rgba(0,0,0,0.5), 0 1px 0 rgba(255,255,255,0.03) inset',
     }}>
       {children}
     </div>
@@ -1399,7 +1388,7 @@ function TerminalHeader({ host }) {
       display: 'flex',
       alignItems: 'center',
       padding: '8px 12px',
-      background: `linear-gradient(180deg, ${C.termHead}, ${C.termBg})`,
+      background: C.termHead,
       borderBottom: `1px solid ${C.termBorder}`,
       gap: '8px',
     }}>
@@ -1427,7 +1416,8 @@ function TerminalHeader({ host }) {
           width: '14px',
           height: '14px',
           borderRadius: '3px',
-          background: `linear-gradient(135deg, #2d3441, #0a0d11)`,
+          background: C.termBg,
+          border: `1px solid ${C.termBorder}`,
           display: 'inline-flex',
           alignItems: 'center',
           justifyContent: 'center',
@@ -1435,7 +1425,6 @@ function TerminalHeader({ host }) {
           fontWeight: 900,
           fontSize: '0.55rem',
           fontFamily: "'JetBrains Mono', monospace",
-          boxShadow: '0 1px 2px rgba(0,0,0,0.4)',
           flexShrink: 0,
         }}>{'>_'}</span>
         <span style={{ fontWeight: 600, color: C.text }}>Terminal</span>
@@ -1462,7 +1451,6 @@ function Dot({ color }) {
       height: '10px',
       borderRadius: '50%',
       background: color,
-      boxShadow: 'inset 0 0 1px rgba(0,0,0,0.4)',
     }} />
   );
 }
@@ -1498,8 +1486,7 @@ function TerminalPrompt({ command, comment, tone, onClick, disabled }) {
     background: showBox ? C.panel : 'transparent',
     border: `1px solid ${showBox ? C.borderHi : 'transparent'}`,
     borderRadius: '4px',
-    transition: 'background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease',
-    boxShadow: showBox ? '0 2px 8px rgba(0,0,0,0.35)' : 'none',
+    transition: 'background 0.12s ease, border-color 0.12s ease',
     cursor: clickable ? 'pointer' : disabled ? 'not-allowed' : 'default',
     opacity: disabled && onClick ? 0.5 : 1,
   };
@@ -1868,9 +1855,6 @@ function ClosedTicketCard({ ticket, result }) {
       borderRadius: '6px',
       padding: '12px',
       marginTop: '4px',
-      boxShadow: ok
-        ? '0 0 14px rgba(63, 185, 80, 0.10)'
-        : '0 0 14px rgba(248, 81, 73, 0.10)',
     }}>
       {/* status banner */}
       <div style={{
@@ -2301,11 +2285,9 @@ function IntroScreen({ onStart }) {
         }}
         onMouseEnter={e => {
           e.currentTarget.style.background = 'rgba(63,185,80,0.1)';
-          e.currentTarget.style.boxShadow = '0 0 16px rgba(63,185,80,0.2)';
         }}
         onMouseLeave={e => {
           e.currentTarget.style.background = 'transparent';
-          e.currentTarget.style.boxShadow = 'none';
         }}
       >
         $ start-shift
@@ -2353,10 +2335,6 @@ function TicketCard({ ticket, preview }) {
     ticket.severity === 'prio-1' ? C.danger  :
     ticket.severity === 'prio-2' ? C.warning :
     C.border;
-  const sevGlow =
-    ticket.severity === 'prio-1' ? '0 0 16px rgba(248, 81, 73, 0.18)'   :
-    ticket.severity === 'prio-2' ? '0 0 12px rgba(210, 153, 34, 0.12)' :
-    'none';
 
   return (
     <div style={{
@@ -2364,8 +2342,6 @@ function TicketCard({ ticket, preview }) {
       border: `1px solid ${sevColor}`,
       borderRadius: '6px',
       padding: '12px',
-      boxShadow: sevGlow,
-      transition: 'box-shadow 0.2s',
       marginTop: '4px',
     }}>
       {/* ticket header */}
