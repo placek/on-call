@@ -57,6 +57,17 @@ Sequence bonus conditions:
 - `before <stack>` — next slot will have that stack
 - `with <stack>` — any other slot has that stack
 
+## ★ legendary fixes
+
+Roughly `4%` of draws produce a **legendary fix** instead of a normal one — gold-tinted, attributed to a famous programmer (Linus Torvalds, Ada Lovelace, Grace Hopper, & co). They have one job:
+
+- One legendary in your 3-card deploy **auto-passes** every requirement and ignores the blocked stack.
+- The card itself contributes `0` velocity — only the other two normal cards in the deploy add points.
+- Never bugged. Never carries a sequence bonus. Combos are suppressed when a legendary is in the deploy.
+- Skip penalty still applies — they rescue a ticket but don't rewrite which ticket you chose.
+
+_Burn them on an impossible blocked-stack incident, or save them for a prio-1 you'd otherwise have to skip. Three legendaries in a row clears a ticket for zero velocity — sometimes that's still the right call._
+
 ## combo bonuses
 
 Detected on the full 3-card deploy. They stack with sequence bonuses and the multiplier:

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { FIXES, TICKET_POOL, HOST_WORDS, HOST_TLDS, HOST_SPLITS } from './content';
+import { FIXES, TICKET_POOL, PROGRAMMERS, HOST_WORDS, HOST_TLDS, HOST_SPLITS } from './content';
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  ON-CALL — a DevOps ticket triage game.
@@ -46,6 +46,7 @@ const FONTS_CSS = `
     --termBorder: #21262d;
     --termText: #d1d7e0;
     --termPrompt: #3fb950;
+    --legendary: #ffd166;
   }
 
   [data-theme="light"] {
@@ -69,6 +70,7 @@ const FONTS_CSS = `
     --termBorder: #d0d7de;
     --termText: #1f2328;
     --termPrompt: #1a7f37;
+    --legendary: #b8860b;
   }
 `;
 
@@ -95,6 +97,7 @@ const C = {
   termBorder:    'var(--termBorder)',
   termText:      'var(--termText)',
   termPrompt:    'var(--termPrompt)',
+  legendary:     'var(--legendary)',
 };
 
 const STACKS = {
@@ -193,7 +196,30 @@ function genSha() {
 }
 
 let _cardUid = 0;
+// ~4% chance per draw of minting a legendary fix instead of a normal one.
+// Legendary cards contribute 0 to the per-stack score, but their presence
+// in the final 3-card deploy forces an auto-pass: every requirement passes,
+// blocked-stack taint is ignored, and combos are suppressed. They are never
+// faulty and never carry a sequence bonus.
+const LEGENDARY_CHANCE = 0.04;
+
 function generateCard(stack) {
+  if (Math.random() < LEGENDARY_CHANCE) {
+    const author = _pick(PROGRAMMERS);
+    return {
+      id: ++_cardUid,
+      sha: genSha(),
+      stack,
+      value: 0,
+      description: author.signature,
+      context: `legendary · by ${author.name}`,
+      bonus: null,
+      faulty: false,
+      legendary: true,
+      author: author.name,
+    };
+  }
+
   const value = 1 + Math.floor(Math.random() * 13);
   const fix = _pick(FIXES[stack][value - 1]);
   // ~18% of fixes are faulty — looks normal in the hand, revealed only after placement
@@ -212,8 +238,10 @@ function generateCard(stack) {
 
 // Effective scoring value of a card.
 // Faulty fixes contribute -floor(value/2) instead of +value.
+// Legendary fixes contribute 0 — their power is the auto-pass, not points.
 // Bonuses (when their condition fires) still add positively — they're independent of faultiness.
 function effectiveValue(card) {
+  if (card.legendary) return 0;
   return card.faulty ? -Math.floor(card.value / 2) : card.value;
 }
 
@@ -338,6 +366,9 @@ const COMBO_DEFS = [
 
 function detectCombos(cards, ticket) {
   if (cards.length !== 3) return [];
+  // A legendary in the deploy short-circuits scoring; suppress combos so the
+  // (value === 0) trio doesn't accidentally trigger VERSION_MATCH etc.
+  if (cards.some(c => c.legendary)) return [];
   return COMBO_DEFS.filter(combo => combo.test(cards, ticket));
 }
 
@@ -398,12 +429,26 @@ function scoreDeploy(cards, ticket) {
   });
 
   const baseScore = Object.values(perStack).reduce((a, b) => a + b, 0);
-  const tainted = !!ticket.blocked && cards.some(c => c.stack === ticket.blocked);
-  const allPassed = reqStatus.every(r => r.passed);
+
+  // Legendary auto-pass: a single legendary card in the 3-card deploy
+  // forces every requirement to pass and ignores the blocked-stack taint.
+  // Velocity still comes from the non-legendary cards' values (legendaries
+  // contribute 0). Mark the result so the UI can surface the override.
+  const hasLegendary = cards.some(c => c.legendary);
+  const legendaryAuthors = cards.filter(c => c.legendary).map(c => c.author);
+
+  const tainted = hasLegendary
+    ? false
+    : (!!ticket.blocked && cards.some(c => c.stack === ticket.blocked));
+
+  const finalReqStatus = hasLegendary
+    ? reqStatus.map(r => ({ ...r, passed: true }))
+    : reqStatus;
+  const allPassed = finalReqStatus.every(r => r.passed);
 
   return {
     perStack,
-    reqStatus,
+    reqStatus: finalReqStatus,
     baseScore,
     combos,
     comboBonus,
@@ -411,6 +456,8 @@ function scoreDeploy(cards, ticket) {
     total: baseScore + comboBonus,
     tainted,
     allPassed,
+    legendary: hasLegendary,
+    legendaryAuthors,
   };
 }
 
@@ -460,8 +507,11 @@ function HandCard({ stack, card, remaining, blocked, deployFull, deployed, phase
     );
   }
 
-  const showBox = hovered;
-  const borderColor = bonusFiresNow ? C.warning : C.borderHi;
+  const isLegendary = !!card.legendary;
+  const showBox = hovered || isLegendary;
+  const borderColor = isLegendary ? C.legendary : (bonusFiresNow ? C.warning : C.borderHi);
+  // Legendary cards ignore blocked-stack warnings — they auto-pass anyway.
+  const showBlockedHints = blocked && !isLegendary;
 
   return (
     <button
@@ -480,25 +530,27 @@ function HandCard({ stack, card, remaining, blocked, deployFull, deployed, phase
         transition: 'background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease',
         textAlign: 'left',
         opacity: dimmed ? 0.45 : 1,
-        boxShadow: showBox && bonusFiresNow
-          ? '0 0 10px rgba(210, 153, 34, 0.18)'
-          : 'none',
+        boxShadow: isLegendary
+          ? '0 0 10px rgba(255, 209, 102, 0.22)'
+          : showBox && bonusFiresNow
+            ? '0 0 10px rgba(210, 153, 34, 0.18)'
+            : 'none',
         overflow: 'hidden',
         fontFamily: "'JetBrains Mono', monospace",
       }}
     >
-      {/* left accent bar — stack color, only on box state */}
+      {/* left accent bar — stack color, or gold for legendary */}
       {showBox && (
         <div style={{
           position: 'absolute', left: 0, top: 0, bottom: 0, width: '3px',
-          background: s.color,
-          opacity: blocked ? 0.5 : 1,
+          background: isLegendary ? C.legendary : s.color,
+          opacity: showBlockedHints ? 0.5 : 1,
           transition: 'opacity 0.12s ease',
         }} />
       )}
 
-      {/* blocked diagonal stripes — only when box showing (warning prefix shows when not) */}
-      {blocked && showBox && (
+      {/* blocked diagonal stripes — only when box showing AND not legendary */}
+      {showBlockedHints && showBox && (
         <div style={{
           position: 'absolute', inset: 0,
           background: 'repeating-linear-gradient(45deg, transparent 0 5px, rgba(248,81,73,0.1) 5px 6px)',
@@ -509,7 +561,7 @@ function HandCard({ stack, card, remaining, blocked, deployFull, deployed, phase
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
         <div style={{
           fontSize: '0.62rem',
-          color: C.warning,
+          color: isLegendary ? C.legendary : C.warning,
           fontWeight: 700,
           fontVariantNumeric: 'tabular-nums',
           letterSpacing: '0.02em',
@@ -517,30 +569,40 @@ function HandCard({ stack, card, remaining, blocked, deployFull, deployed, phase
         }}>
           {card.sha}
         </div>
-        {/* When blocked, prefix a red ✕ that's always visible */}
-        {blocked && (
+        {/* When blocked (and not legendary), prefix a red ✕ that's always visible */}
+        {showBlockedHints && (
           <span style={{ color: C.danger, fontWeight: 700, fontSize: '0.7rem', marginRight: '-4px' }}>
             ✕
           </span>
         )}
         <div style={{
           fontSize: '0.62rem',
-          color: blocked ? C.danger : s.color,
+          color: isLegendary ? C.legendary : (blocked ? C.danger : s.color),
           fontWeight: 700,
           minWidth: '26px',
           letterSpacing: '0.03em',
         }}>
-          {s.name}
+          {isLegendary ? '★' : s.name}
         </div>
         <div style={{
-          fontSize: '0.78rem', fontWeight: 700, color: C.text,
+          fontSize: '0.78rem', fontWeight: 700,
+          color: isLegendary ? C.legendary : C.text,
           minWidth: '24px', textAlign: 'right', fontVariantNumeric: 'tabular-nums',
         }}>
-          {card.value}
-          <span style={{ color: C.faint, fontWeight: 400, fontSize: '0.6rem' }}>pt</span>
+          {isLegendary ? (
+            <span style={{ fontSize: '0.6rem', letterSpacing: '0.05em' }}>LGND</span>
+          ) : (
+            <>
+              {card.value}
+              <span style={{ color: C.faint, fontWeight: 400, fontSize: '0.6rem' }}>pt</span>
+            </>
+          )}
         </div>
         <div style={{
-          fontSize: '0.75rem', color: C.text, flex: 1, minWidth: 0,
+          fontSize: '0.75rem',
+          color: isLegendary ? C.legendary : C.text,
+          fontStyle: isLegendary ? 'italic' : 'normal',
+          flex: 1, minWidth: 0,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>
           {card.description}
@@ -562,7 +624,7 @@ function HandCard({ stack, card, remaining, blocked, deployFull, deployed, phase
         <span style={{ color: C.faint, fontStyle: 'italic' }}>
           // {card.context}
         </span>
-        {card.bonus && (
+        {!isLegendary && card.bonus && (
           <span style={{
             marginLeft: 'auto',
             color: bonusFiresNow ? C.warning : C.muted,
@@ -572,6 +634,18 @@ function HandCard({ stack, card, remaining, blocked, deployFull, deployed, phase
           }}>
             ★ {bonusLabel(card.bonus)} +{card.bonus.points}
             {bonusFiresNow && <span style={{ color: C.success, marginLeft: '4px' }}>✓ ready</span>}
+          </span>
+        )}
+        {isLegendary && (
+          <span style={{
+            marginLeft: 'auto',
+            color: C.legendary,
+            fontWeight: 700,
+            letterSpacing: '0.05em',
+            whiteSpace: 'nowrap',
+            fontSize: '0.58rem',
+          }}>
+            ★ auto-ship · 0 pt
           </span>
         )}
       </div>
@@ -597,16 +671,19 @@ function DeployPackage({ deployed, preview, blocked }) {
         const s = STACKS[card.stack];
         const cb = cardBonuses[i];
         const fired = cb && cb.fired;
-        const isBlocked = blocked && card.stack === blocked;
+        const isLegendary = !!card.legendary;
+        // Legendary auto-pass overrides blocked-stack taint — don't flag it red.
+        const isBlocked = !isLegendary && blocked && card.stack === blocked;
         const isFaulty = card.faulty;
         const eff = effectiveValue(card);
 
-        // Cherry-picks are final — only faulty/blocked states earn a visible box,
+        // Cherry-picks are final — only faulty/blocked/legendary states earn a visible box,
         // since those are informational, not interactive.
-        const showBox = isBlocked || isFaulty;
+        const showBox = isBlocked || isFaulty || isLegendary;
         const borderColor =
-          isBlocked ? C.danger :
-          isFaulty  ? C.danger :
+          isLegendary ? C.legendary :
+          isBlocked   ? C.danger :
+          isFaulty    ? C.danger :
           C.borderHi;
         const shadow = 'none';
 
@@ -629,7 +706,7 @@ function DeployPackage({ deployed, preview, blocked }) {
             {showBox && (
               <div style={{
                 position: 'absolute', left: 0, top: 0, bottom: 0, width: '3px',
-                background: isFaulty ? C.danger : isBlocked ? C.danger : s.color,
+                background: isLegendary ? C.legendary : (isFaulty || isBlocked) ? C.danger : s.color,
               }} />
             )}
             {isBlocked && (
@@ -642,7 +719,7 @@ function DeployPackage({ deployed, preview, blocked }) {
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.72rem' }}>
               <span style={{ color: C.faint, fontWeight: 700, minWidth: '14px' }}>{i + 1}.</span>
               <span style={{
-                color: C.warning,
+                color: isLegendary ? C.legendary : C.warning,
                 fontWeight: 700,
                 fontSize: '0.62rem',
                 fontVariantNumeric: 'tabular-nums',
@@ -656,14 +733,18 @@ function DeployPackage({ deployed, preview, blocked }) {
                 </span>
               )}
               <span style={{
-                color: isBlocked ? C.danger : s.color,
+                color: isLegendary ? C.legendary : (isBlocked ? C.danger : s.color),
                 fontWeight: 700, minWidth: '26px', fontSize: '0.62rem',
               }}>
-                {s.name}
+                {isLegendary ? '★' : s.name}
               </span>
-              <span style={{ color: isFaulty ? C.danger : C.text, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>
-                {isFaulty ? eff : card.value}
-                {fired && (
+              <span style={{
+                color: isLegendary ? C.legendary : (isFaulty ? C.danger : C.text),
+                fontWeight: 700,
+                fontVariantNumeric: 'tabular-nums',
+              }}>
+                {isLegendary ? '0' : (isFaulty ? eff : card.value)}
+                {fired && !isLegendary && (
                   <>
                     <span style={{ color: C.faint, fontWeight: 400 }}>+</span>
                     <span style={{ color: C.warning, fontWeight: 700 }}>{cb.points}</span>
@@ -671,7 +752,9 @@ function DeployPackage({ deployed, preview, blocked }) {
                 )}
               </span>
               <span style={{
-                flex: 1, minWidth: 0, color: C.text,
+                flex: 1, minWidth: 0,
+                color: isLegendary ? C.legendary : C.text,
+                fontStyle: isLegendary ? 'italic' : 'normal',
                 overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               }}>
                 {card.description}
@@ -684,8 +767,18 @@ function DeployPackage({ deployed, preview, blocked }) {
                     bugged
                   </span>
                 )}
+                {isLegendary && (
+                  <span style={{
+                    color: C.legendary,
+                    marginLeft: '6px',
+                    fontWeight: 700,
+                    fontStyle: 'normal',
+                  }}>
+                    · {card.author}
+                  </span>
+                )}
               </span>
-              {card.bonus && (
+              {!isLegendary && card.bonus && (
                 <span style={{
                   fontSize: '0.55rem',
                   fontWeight: 700,
@@ -694,6 +787,18 @@ function DeployPackage({ deployed, preview, blocked }) {
                   flexShrink: 0,
                 }}>
                   {fired ? '★ ' : '☆ '}{bonusLabel(card.bonus)}
+                </span>
+              )}
+              {isLegendary && (
+                <span style={{
+                  fontSize: '0.55rem',
+                  fontWeight: 700,
+                  color: C.legendary,
+                  letterSpacing: '0.06em',
+                  whiteSpace: 'nowrap',
+                  flexShrink: 0,
+                }}>
+                  LEGENDARY
                 </span>
               )}
             </div>
@@ -2197,6 +2302,11 @@ function ClosedTicketCard({ ticket, result }) {
             {result.msg}
           </span>
         )}
+        {result.legendary && (
+          <span style={{ color: C.legendary, fontWeight: 700, marginLeft: '6px' }}>
+            · ★ legendary by {result.legendaryAuthors.join(' + ')}
+          </span>
+        )}
         {result.skipPenalty > 0 && (
           <span style={{ color: C.danger, fontWeight: 700, marginLeft: '6px' }}>
             · −{result.skipPenalty} skip penalty
@@ -2443,6 +2553,22 @@ function IntroScreen({ onStart }) {
         <MdLI><MdCode color={C.warning}>before &lt;stack&gt;</MdCode> — next slot will have that stack</MdLI>
         <MdLI><MdCode color={C.warning}>with &lt;stack&gt;</MdCode> — any other slot has that stack</MdLI>
       </MdUL>
+
+      <MdH2>★ legendary fixes</MdH2>
+      <MdP>
+        Roughly <MdCode>4%</MdCode> of draws produce a <MdB color={C.legendary}>legendary fix</MdB> instead of a normal one — gold-tinted, attributed to a famous programmer (Linus Torvalds, Ada Lovelace, Grace Hopper, &amp; co). They have one job:
+      </MdP>
+      <MdUL>
+        <MdLI>One legendary in your 3-card deploy <MdB color={C.success}>auto-passes</MdB> every requirement and ignores the blocked stack.</MdLI>
+        <MdLI>The card itself contributes <MdCode>0</MdCode> velocity — only the other two normal cards in the deploy add points.</MdLI>
+        <MdLI>Never bugged. Never carries a sequence bonus. Combos are suppressed when a legendary is in the deploy.</MdLI>
+        <MdLI>Skip penalty still applies — they rescue a ticket but don't rewrite which ticket you chose.</MdLI>
+      </MdUL>
+      <MdP>
+        <span style={{ color: C.faint, fontStyle: 'italic' }}>
+          Burn them on an impossible blocked-stack incident, or save them for a prio-1 you'd otherwise have to skip. Three legendaries in a row clears a ticket for zero velocity — sometimes that's still the right call.
+        </span>
+      </MdP>
 
       <MdH2>combo bonuses</MdH2>
       <MdP>Detected on the full 3-card deploy. They stack with sequence bonuses and the multiplier:</MdP>
@@ -2716,25 +2842,31 @@ function PushOutput({ result, ticket }) {
       {/* Diff lines for each deployed card */}
       {cards.map((c, i) => {
         const s = STACKS[c.stack];
+        const isLegendary = !!c.legendary;
         const counted = requiredStacks.has(c.stack);
-        const blocked = ticket.blocked && c.stack === ticket.blocked;
+        // Legendary cards bypass blocked-stack taint entirely.
+        const blocked = !isLegendary && ticket.blocked && c.stack === ticket.blocked;
         const cb = result.cardBonuses && result.cardBonuses[i];
         const fired = cb && cb.fired;
         const isFaulty = c.faulty;
         const eff = effectiveValue(c);
         let marker;
-        if (blocked)       marker = '!';
+        if (isLegendary)   marker = '★';
+        else if (blocked)  marker = '!';
         else if (isFaulty) marker = '⚠';
         else if (counted)  marker = '+';
         else               marker = ' ';
         const markerColor =
-          blocked  ? C.danger :
-          isFaulty ? C.danger :
+          isLegendary ? C.legendary :
+          blocked     ? C.danger :
+          isFaulty    ? C.danger :
           ok && counted ? C.success :
           C.faint;
-        const valueDisplay = counted
-          ? (isFaulty ? `${eff}` : `+${c.value}`)
-          : (isFaulty ? `(${eff})` : `(${c.value})`);
+        const valueDisplay = isLegendary
+          ? '(0)'
+          : counted
+            ? (isFaulty ? `${eff}` : `+${c.value}`)
+            : (isFaulty ? `(${eff})` : `(${c.value})`);
         return (
           <div key={i} style={{
             fontSize: '0.7rem',
@@ -2748,7 +2880,7 @@ function PushOutput({ result, ticket }) {
           }}>
             <span style={{ color: markerColor, fontWeight: 700, width: '10px' }}>{marker}</span>
             <span style={{
-              color: C.warning,
+              color: isLegendary ? C.legendary : C.warning,
               fontWeight: 700,
               fontSize: '0.65rem',
               fontVariantNumeric: 'tabular-nums',
@@ -2756,11 +2888,16 @@ function PushOutput({ result, ticket }) {
             }}>
               {c.sha}
             </span>
-            <span style={{ color: s.color, fontWeight: 700, minWidth: '30px' }}>
-              [{s.name}]
+            <span style={{
+              color: isLegendary ? C.legendary : s.color,
+              fontWeight: 700,
+              minWidth: '30px',
+            }}>
+              [{isLegendary ? 'LGND' : s.name}]
             </span>
             <span style={{
-              color: C.text,
+              color: isLegendary ? C.legendary : C.text,
+              fontStyle: isLegendary ? 'italic' : 'normal',
               flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }}>
               {c.description}
@@ -2769,25 +2906,45 @@ function PushOutput({ result, ticket }) {
                   bugged
                 </span>
               )}
-              {fired && (
+              {isLegendary && (
+                <span style={{
+                  color: C.legendary,
+                  marginLeft: '6px',
+                  fontWeight: 700,
+                  fontStyle: 'normal',
+                }}>
+                  · {c.author}
+                </span>
+              )}
+              {fired && !isLegendary && (
                 <span style={{ color: C.warning, marginLeft: '6px', fontSize: '0.6rem', fontWeight: 700 }}>
                   ★ {bonusLabel(c.bonus)}
                 </span>
               )}
             </span>
             <span style={{
-              color: isFaulty ? C.danger : (counted ? C.text : C.faint),
+              color: isLegendary ? C.legendary : (isFaulty ? C.danger : (counted ? C.text : C.faint)),
               fontWeight: 700,
               fontVariantNumeric: 'tabular-nums',
             }}>
               {valueDisplay}
-              {fired && counted && (
+              {fired && counted && !isLegendary && (
                 <span style={{ color: C.warning }}>+{cb.points}</span>
               )}
             </span>
           </div>
         );
       })}
+
+      {/* Legendary auto-pass banner */}
+      {result.legendary && (
+        <>
+          <div style={{ height: '6px' }} />
+          <TermLine color={C.legendary}>
+            ★ legendary fix · auto-pass by {result.legendaryAuthors.join(' + ')}
+          </TermLine>
+        </>
+      )}
 
       {/* Combos */}
       {result.combos && result.combos.length > 0 && (

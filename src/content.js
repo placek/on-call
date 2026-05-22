@@ -530,6 +530,41 @@ export const HOST_TLDS = [
   'dc', 'pod', 'ns', 'zone', 'region',
 ];
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  PROGRAMMERS — authors stamped on legendary fix cards. Sampled in
+//  generateCard(); the chosen entry's `signature` becomes the card's
+//  description, and `name` is shown as the author byline. Nothing here
+//  affects scoring — it's all flavor.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const PROGRAMMERS = [
+  { name: 'Linus Torvalds',     signature: 'another perfectly fine rebase'              },
+  { name: 'Ada Lovelace',       signature: 'designed the algorithm before the machine'   },
+  { name: 'Grace Hopper',       signature: 'compiled what others said could not compile' },
+  { name: 'Alan Turing',        signature: 'decided the undecidable, twice'              },
+  { name: 'Donald Knuth',       signature: 'art of programming · vol 4, ch 7'            },
+  { name: 'Dennis Ritchie',     signature: 'K&R idiom makes this trivial'                },
+  { name: 'Brian Kernighan',    signature: 'two pages of awk · problem solved'           },
+  { name: 'Ken Thompson',       signature: '/* you are not expected to understand this */'},
+  { name: 'Edsger Dijkstra',    signature: 'GOTO considered harmful · removed'           },
+  { name: 'Margaret Hamilton',  signature: 'guidance code landed it on the first try'    },
+  { name: 'John Carmack',       signature: '0x5f3759df · what the fuck?'                 },
+  { name: 'Bjarne Stroustrup',  signature: 'added one template · problem disappeared'    },
+  { name: 'Guido van Rossum',   signature: 'there is one obvious way to do it'           },
+  { name: 'Anders Hejlsberg',   signature: 'narrowed every type until the bug vanished'  },
+  { name: 'James Gosling',      signature: 'wrote once · ran everywhere'                 },
+  { name: 'Yukihiro Matsumoto', signature: 'made the programmer happy first'             },
+  { name: 'Larry Wall',         signature: 'TMTOWTDI · picked the elegant one'           },
+  { name: 'Rasmus Lerdorf',     signature: 'shipped a personal home page in an afternoon'},
+  { name: 'Tim Berners-Lee',    signature: 'hyperlinked the failing service back to life'},
+  { name: 'Vint Cerf',          signature: 'TCP retried until it worked'                 },
+  { name: 'Brendan Eich',       signature: 'ten days · one language · zero blockers'     },
+  { name: 'Barbara Liskov',     signature: 'substituted the base class · all green'      },
+  { name: 'Richard Stallman',   signature: 'GPL\'d the fix · no take-backs'              },
+  { name: 'Niklaus Wirth',      signature: 'algorithms + data structures = programs'     },
+  { name: 'Tony Hoare',         signature: 'introduced quicksort to your bottleneck'     },
+];
+
 export const HOST_SPLITS = [
   // original
   'de|bug|er', 'in|tern|et', 'sys|tem|d', 'pro|gram|er', 'com|put|er',
