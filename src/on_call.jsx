@@ -119,6 +119,21 @@ function _pick(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
+// Tracks whether the viewport is narrow enough that we should switch to
+// compact mobile variants of the UI. Single shared breakpoint at 640px.
+function useIsNarrow(breakpoint = 640) {
+  const [narrow, setNarrow] = useState(
+    typeof window !== 'undefined' ? window.innerWidth < breakpoint : false
+  );
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onResize = () => setNarrow(window.innerWidth < breakpoint);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [breakpoint]);
+  return narrow;
+}
+
 function genHost() {
   const style = Math.floor(Math.random() * 4);
   switch (style) {
@@ -1171,12 +1186,14 @@ export default function OnCall() {
     return { ...scoreDeploy(deployed, ticket), partial: false };
   }, [deployed, ticket]);
 
+  const narrow = useIsNarrow();
+
   return (
     <div data-theme={theme} style={{
       background: C.bg,
       color: C.text,
       fontFamily: "'JetBrains Mono', monospace",
-      padding: '12px',
+      padding: narrow ? '8px' : '12px',
       transition: 'background 0.2s ease, color 0.2s ease',
     }}>
       <style>{FONTS_CSS}</style>
@@ -1394,6 +1411,7 @@ export default function OnCall() {
 //  hit the trash to wipe the whole log from localStorage.
 // ─────────────────────────────────────────────────────────────────────────────
 function HistoryPanel({ history, open, onToggle }) {
+  const narrow = useIsNarrow();
   const sorted = useMemo(
     () => [...history].sort((a, b) => b.credits - a.credits),
     [history]
@@ -1445,25 +1463,27 @@ function HistoryPanel({ history, open, onToggle }) {
           borderRadius: '8px',
           overflow: 'hidden',
         }}>
-          {/* table header */}
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: '32px 1fr 80px 70px 70px 110px',
-            gap: '8px',
-            padding: '8px 12px',
-            borderBottom: `1px solid ${C.trackerBorder}`,
-            fontSize: '0.55rem',
-            letterSpacing: '0.08em',
-            fontWeight: 600,
-            color: C.faint,
-          }}>
-            <span>#</span>
-            <span>velocity</span>
-            <span style={{ textAlign: 'right' }}>resolved</span>
-            <span style={{ textAlign: 'right' }}>rejected</span>
-            <span style={{ textAlign: 'right' }}>ended</span>
-            <span style={{ textAlign: 'right' }}>date</span>
-          </div>
+          {/* table header — desktop only; on narrow each row is self-labeled */}
+          {!narrow && (
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: '32px 1fr 80px 70px 70px 110px',
+              gap: '8px',
+              padding: '8px 12px',
+              borderBottom: `1px solid ${C.trackerBorder}`,
+              fontSize: '0.55rem',
+              letterSpacing: '0.08em',
+              fontWeight: 600,
+              color: C.faint,
+            }}>
+              <span>#</span>
+              <span>velocity</span>
+              <span style={{ textAlign: 'right' }}>resolved</span>
+              <span style={{ textAlign: 'right' }}>rejected</span>
+              <span style={{ textAlign: 'right' }}>ended</span>
+              <span style={{ textAlign: 'right' }}>date</span>
+            </div>
+          )}
 
           {sorted.length === 0 ? (
             <div style={{
@@ -1478,6 +1498,64 @@ function HistoryPanel({ history, open, onToggle }) {
           ) : (
             sorted.map((r, i) => {
               const isTop = i === 0;
+              if (narrow) {
+                // Mobile: rank + velocity on a primary line, meta on a secondary muted line.
+                return (
+                  <div
+                    key={r.id}
+                    style={{
+                      padding: '8px 12px',
+                      borderBottom: i === sorted.length - 1 ? 'none' : `1px solid ${C.trackerBorder}`,
+                      background: isTop ? C.panel2 : 'transparent',
+                    }}
+                  >
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'baseline',
+                      gap: '10px',
+                      fontSize: '0.78rem',
+                    }}>
+                      <span style={{
+                        color: isTop ? C.success : C.faint,
+                        fontVariantNumeric: 'tabular-nums',
+                        fontWeight: isTop ? 700 : 500,
+                        minWidth: '18px',
+                      }}>
+                        {isTop ? '★' : i + 1}
+                      </span>
+                      <span style={{
+                        color: isTop ? C.success : C.text,
+                        fontWeight: 700,
+                        fontVariantNumeric: 'tabular-nums',
+                      }}>
+                        {r.credits}
+                      </span>
+                      <span style={{
+                        marginLeft: 'auto',
+                        fontSize: '0.6rem',
+                        color: r.reason === 'paged' ? C.danger : C.muted,
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.06em',
+                        fontWeight: 600,
+                      }}>
+                        {r.reason}
+                      </span>
+                    </div>
+                    <div style={{
+                      display: 'flex',
+                      gap: '12px',
+                      marginTop: '2px',
+                      fontSize: '0.6rem',
+                      color: C.faint,
+                      fontVariantNumeric: 'tabular-nums',
+                    }}>
+                      <span>{r.resolved} resolved</span>
+                      <span style={{ color: r.rejected >= 3 ? C.danger : C.faint }}>{r.rejected} rejected</span>
+                      <span style={{ marginLeft: 'auto' }}>{formatRunDate(r.at)}</span>
+                    </div>
+                  </div>
+                );
+              }
               return (
                 <div
                   key={r.id}
@@ -1659,14 +1737,15 @@ function TrackerPanel({ children }) {
 // panels read as a pair of desktop windows. Left: traffic-light dots.
 // Centered: the window/app title. Right: the on-shift status badge.
 function TrackerHeader({ onShift }) {
+  const narrow = useIsNarrow();
   return (
     <div style={{
       display: 'flex',
       alignItems: 'center',
-      padding: '8px 12px',
+      padding: narrow ? '7px 10px' : '8px 12px',
       background: C.trackerHead,
       borderBottom: `1px solid ${C.trackerBorder}`,
-      gap: '10px',
+      gap: narrow ? '8px' : '10px',
     }}>
       {/* traffic lights — same shape/colors as the terminal window */}
       <div style={{ display: 'flex', gap: '6px' }}>
@@ -1705,10 +1784,14 @@ function TrackerHeader({ onShift }) {
           flexShrink: 0,
         }}>T</span>
         <span style={{ fontWeight: 600, color: C.text }}>Triage</span>
-        <span style={{ color: C.faint }}>—</span>
-        <span style={{ color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          ticket-tracker · main
-        </span>
+        {!narrow && (
+          <>
+            <span style={{ color: C.faint }}>—</span>
+            <span style={{ color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              ticket-tracker · main
+            </span>
+          </>
+        )}
       </div>
 
       {/* status pill — replaces the terminal's empty right slot.
@@ -1781,6 +1864,7 @@ function TrackerSection({ label, count, tone }) {
 
 // Stats row at top of the tracker
 function TrackerStats({ credits, strikes, resolved }) {
+  const narrow = useIsNarrow();
   const rejected = 3 - strikes;
   const rejectedColor =
     rejected === 0 ? C.muted :
@@ -1789,11 +1873,11 @@ function TrackerStats({ credits, strikes, resolved }) {
   return (
     <div style={{
       display: 'flex',
-      padding: '8px 14px',
-      gap: '20px',
+      padding: narrow ? '8px 10px' : '8px 14px',
+      gap: narrow ? '14px' : '20px',
       borderBottom: `1px solid ${C.trackerBorder}`,
     }}>
-      <Stat label="SPRINT VELOCITY" value={credits}  color={C.success} />
+      <Stat label={narrow ? 'VELOCITY' : 'SPRINT VELOCITY'} value={credits}  color={C.success} />
       <Stat label="REJECTED"        value={rejected} color={rejectedColor} />
       <Stat label="RESOLVED"        value={resolved} />
     </div>
@@ -1837,11 +1921,12 @@ function TerminalPanel({ children }) {
 }
 
 function TerminalHeader({ host }) {
+  const narrow = useIsNarrow();
   return (
     <div style={{
       display: 'flex',
       alignItems: 'center',
-      padding: '8px 12px',
+      padding: narrow ? '7px 10px' : '8px 12px',
       background: C.termHead,
       borderBottom: `1px solid ${C.termBorder}`,
       gap: '8px',
@@ -1882,17 +1967,21 @@ function TerminalHeader({ host }) {
           flexShrink: 0,
         }}>{'>_'}</span>
         <span style={{ fontWeight: 600, color: C.text }}>Terminal</span>
-        <span style={{ color: C.faint }}>—</span>
-        <span style={{
-          color: C.muted,
-          fontFamily: "'JetBrains Mono', monospace",
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-        }}>
-          dev@{host || 'localhost'}: /srv/app/current · zsh
-        </span>
+        {!narrow && (
+          <>
+            <span style={{ color: C.faint }}>—</span>
+            <span style={{
+              color: C.muted,
+              fontFamily: "'JetBrains Mono', monospace",
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+            }}>
+              dev@{host || 'localhost'}: /srv/app/current · zsh
+            </span>
+          </>
+        )}
       </div>
-      <div style={{ width: '36px', flexShrink: 0 }} />
+      {!narrow && <div style={{ width: '36px', flexShrink: 0 }} />}
     </div>
   );
 }
@@ -2652,11 +2741,12 @@ function MdHR() {
 }
 
 function IntroScreen({ onStart }) {
+  const narrow = useIsNarrow();
   return (
     <div style={{
       maxWidth: '720px',
-      margin: '14px auto 0',
-      padding: '28px 32px',
+      margin: narrow ? '8px auto 0' : '14px auto 0',
+      padding: narrow ? '16px 14px' : '28px 32px',
       background: C.trackerBg,
       border: `1px solid ${C.trackerBorder}`,
       borderRadius: '8px',
