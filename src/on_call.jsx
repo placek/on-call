@@ -113,7 +113,7 @@ const STACK_KEYS = Object.keys(STACKS);
 //  Per-stack pool size — how many placements you get from each stack per shift
 // ─────────────────────────────────────────────────────────────────────────────
 
-const STACK_POOL_SIZE = 12;
+const STACK_POOL_SIZE = 10;
 
 function _pick(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
@@ -196,15 +196,58 @@ function genSha() {
 }
 
 let _cardUid = 0;
-// ~4% chance per draw of minting a legendary fix instead of a normal one.
-// Legendary cards contribute 0 to the per-stack score, but their presence
-// in the final 3-card deploy forces an auto-pass: every requirement passes,
-// blocked-stack taint is ignored, and combos are suppressed. They are never
-// faulty and never carry a sequence bonus.
-const LEGENDARY_CHANCE = 0.04;
+// Fixed per-shift quotas — guarantees the same risk/reward shape every game.
+// Total pool slots = STACK_KEYS.length × STACK_POOL_SIZE = 4 × 10 = 40.
+//   FAULTY_PER_SHIFT = 6  → 15% of draws are bugged (was random 18%)
+//   LEGENDARY_PER_SHIFT = 2 → guaranteed two rescue cards per shift
+// Slot positions are randomized inside buildShiftDecks() so each game still
+// feels different, but the *budget* is constant.
+const FAULTY_PER_SHIFT = 6;
+const LEGENDARY_PER_SHIFT = 2;
 
-function generateCard(stack) {
-  if (Math.random() < LEGENDARY_CHANCE) {
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+// Build the full 40-card shift deck, bucketed by stack. Allocates the
+// faulty/legendary quotas across slots first, then materializes each slot
+// into a card (value, description variant, sequence bonus, author rolled
+// per-card).
+function buildShiftDecks() {
+  const slots = [];
+  STACK_KEYS.forEach(s => {
+    for (let i = 0; i < STACK_POOL_SIZE; i++) {
+      slots.push({ stack: s, faulty: false, legendary: false });
+    }
+  });
+
+  // Shuffle once, mark first N slots legendary, next M faulty, then re-shuffle
+  // so legendaries can land anywhere within their stack's pool.
+  shuffle(slots);
+  for (let i = 0; i < LEGENDARY_PER_SHIFT && i < slots.length; i++) {
+    slots[i].legendary = true;
+  }
+  let placed = 0;
+  for (let i = LEGENDARY_PER_SHIFT; placed < FAULTY_PER_SHIFT && i < slots.length; i++) {
+    slots[i].faulty = true;
+    placed++;
+  }
+  shuffle(slots);
+
+  const decks = {};
+  STACK_KEYS.forEach(s => { decks[s] = []; });
+  slots.forEach(slot => {
+    decks[slot.stack].push(materializeCard(slot.stack, slot.faulty, slot.legendary));
+  });
+  return decks;
+}
+
+function materializeCard(stack, faulty, legendary) {
+  if (legendary) {
     const author = _pick(PROGRAMMERS);
     return {
       id: ++_cardUid,
@@ -222,14 +265,15 @@ function generateCard(stack) {
 
   const value = 1 + Math.floor(Math.random() * 13);
   const fix = _pick(FIXES[stack][value - 1]);
-  // ~18% of fixes are faulty — looks normal in the hand, revealed only after placement
-  const faulty = Math.random() < 0.18;
+  // Soft tell: faulty cards are prefixed with `patch:` instead of the natural
+  // description — subtle enough to require attention, learnable over a few games.
+  const description = faulty ? `patch: ${fix.description.toLowerCase()}` : fix.description;
   return {
     id: ++_cardUid,
     sha: genSha(),
     stack,
     value,
-    description: fix.description,
+    description,
     context: fix.context,
     bonus: rollBonus(stack),
     faulty,
@@ -246,13 +290,16 @@ function effectiveValue(card) {
 }
 
 let _ticketUid = 0;
-function rollTicket(resolved) {
+// `mercy` (anti-snowball): when the player is on their last strike, the
+// next-rolled ticket is softened — tier drops by 1 (min 1) and no blocked stack.
+function rollTicket(resolved, opts = {}) {
   let tier;
   const r = Math.random();
   if (resolved < 3)       tier = 1;
   else if (resolved < 7)  tier = r < 0.55 ? 2 : 1;
   else if (resolved < 12) tier = r < 0.55 ? 2 : (r < 0.85 ? 3 : 1);
   else                    tier = r < 0.6 ? 3 : 2;
+  if (opts.mercy) tier = Math.max(1, tier - 1);
 
   const pool = TICKET_POOL.filter(t => t.tier === tier);
   const base = pool[Math.floor(Math.random() * pool.length)];
@@ -265,19 +312,23 @@ function rollTicket(resolved) {
   const isMulti = Math.random() < multiChance;
 
   const requirements = [];
+  // Threshold creep is capped at +2 — keeps late-shift tickets challenging
+  // without making them statistically unwinnable.
+  const CREEP_CAP = 2;
   if (isMulti) {
     // Two-stack requirement with lower per-stack thresholds
     const stack1 = STACK_KEYS[Math.floor(Math.random() * STACK_KEYS.length)];
     const others = STACK_KEYS.filter(s => s !== stack1);
     const stack2 = others[Math.floor(Math.random() * others.length)];
     const baseT = tier === 2 ? 4 : 5;
-    const creep = Math.floor(resolved / 6);
+    const creep = Math.min(Math.floor(resolved / 6), CREEP_CAP);
     requirements.push({ stack: stack1, threshold: baseT + creep });
     requirements.push({ stack: stack2, threshold: baseT + creep });
   } else {
     const stack = STACK_KEYS[Math.floor(Math.random() * STACK_KEYS.length)];
     const baseT = tier === 1 ? 7 : tier === 2 ? 11 : 15;
-    requirements.push({ stack, threshold: baseT + Math.floor(resolved / 5) });
+    const creep = Math.min(Math.floor(resolved / 5), CREEP_CAP);
+    requirements.push({ stack, threshold: baseT + creep });
   }
 
   // Block from the non-required stacks (only possible if there's at least one left)
@@ -287,7 +338,8 @@ function rollTicket(resolved) {
   const blockChance = isMulti
     ? (tier === 2 ? 0.25 : 0.55)
     : (tier === 1 ? 0 : tier === 2 ? 0.45 : 0.8);
-  if (Math.random() < blockChance) {
+  // Mercy ticket: skip the blocked-stack roll entirely.
+  if (!opts.mercy && Math.random() < blockChance) {
     const candidates = STACK_KEYS.filter(s => !usedStacks.has(s));
     if (candidates.length > 0) {
       blocked = candidates[Math.floor(Math.random() * candidates.length)];
@@ -297,7 +349,16 @@ function rollTicket(resolved) {
   const severity = tier === 1 ? 'prio-3' : tier === 2 ? 'prio-2' : 'prio-1';
   const ticketId = 'TKT-' + (1000 + Math.floor(Math.random() * 9000));
 
-  return { ...base, uid: ++_ticketUid, requirements, blocked, reward: tier * 2, severity, ticketId };
+  return {
+    ...base,
+    uid: ++_ticketUid,
+    requirements,
+    blocked,
+    reward: tier * 2,
+    severity,
+    ticketId,
+    mercy: !!opts.mercy,
+  };
 }
 
 // ── Queue helpers ────────────────────────────────────────────────────────────
@@ -332,7 +393,7 @@ const COMBO_DEFS = [
   {
     key: 'stack',
     name: 'STACK_MATCH',
-    bonus: 5,
+    bonus: 8,
     desc: 'All three fixes on a required stack',
     test: (cards, ticket) =>
       cards.every(c => c.stack === cards[0].stack) &&
@@ -341,18 +402,29 @@ const COMBO_DEFS = [
   {
     key: 'version',
     name: 'VERSION_MATCH',
-    bonus: 5,
+    bonus: 10,
     desc: 'Three fixes of the same effort value',
     test: cards => cards[0].value === cards[1].value && cards[1].value === cards[2].value,
   },
   {
     key: 'chain',
     name: 'PATCH_CHAIN',
-    bonus: 3,
+    bonus: 5,
     desc: 'Three consecutive effort values',
     test: cards => {
       const v = cards.map(c => c.value).sort((a, b) => a - b);
       return v[1] === v[0] + 1 && v[2] === v[1] + 1;
+    },
+  },
+  {
+    key: 'cover',
+    name: 'MULTI_COVER',
+    bonus: 4,
+    desc: 'A card invested in every required stack',
+    test: (cards, ticket) => {
+      if (ticket.requirements.length < 2) return false;
+      const stacksUsed = new Set(cards.map(c => c.stack));
+      return ticket.requirements.every(r => stacksUsed.has(r.stack));
     },
   },
   {
@@ -814,8 +886,10 @@ function DeployPackage({ deployed, preview, blocked }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function OnCall() {
-  // Per-stack remaining placement counts (depletes as cards are placed)
-  const [usesRemaining, setUsesRemaining] = useState({});
+  // Per-stack draw pool — cards waiting behind the one currently in hand.
+  // Built once at startShift() with fixed faulty/legendary quotas; sliced as
+  // cards are played. `usesRemaining` below is derived from this + hand.
+  const [pool, setPool]                   = useState({});
   // Hand: one card per stack (preview of what would be placed next from that stack)
   const [hand, setHand]                   = useState({});
   // Deploy package: ordered array of placed cards, max 3
@@ -825,6 +899,9 @@ export default function OnCall() {
   const [credits, setCredits]             = useState(0);
   const [strikes, setStrikes]             = useState(3);
   const [resolved, setResolved]           = useState(0);
+  // Anti-snowball: armed when the player drops to 1 strike on a rejection;
+  // disarmed after softening the very next rolled ticket.
+  const [mercyArmed, setMercyArmed]       = useState(false);
   // Phases: 'intro' | 'playing' | 'over'. Deploys auto-fire on the 3rd
   // placement, so there's no separate 'result' phase — the just-finished
   // ticket lives in `closedTickets` and is surfaced via `viewingClosedUid`.
@@ -883,15 +960,37 @@ export default function OnCall() {
     [closedTickets, viewingClosedUid]
   );
 
-  function startShift() {
-    const initialUses = {};
-    const initialHand = {};
+  // Per-stack "draws still possible" count: the card currently in hand plus
+  // every card still queued in the pool. Drives the StackPoolList readout
+  // and the deploy-impossible shift-end check.
+  const usesRemaining = useMemo(() => {
+    const out = {};
     STACK_KEYS.forEach(s => {
-      initialUses[s] = STACK_POOL_SIZE;
-      initialHand[s] = generateCard(s);
+      out[s] = (hand[s] ? 1 : 0) + (pool[s]?.length || 0);
+    });
+    return out;
+  }, [hand, pool]);
+
+  // Visible count of legendaries still in the player's deck (hand + pool).
+  const legendaryRemaining = useMemo(() => {
+    let n = 0;
+    STACK_KEYS.forEach(s => {
+      if (hand[s]?.legendary) n++;
+      (pool[s] || []).forEach(c => { if (c.legendary) n++; });
+    });
+    return n;
+  }, [hand, pool]);
+
+  function startShift() {
+    const decks = buildShiftDecks();
+    const initialHand = {};
+    const initialPool = {};
+    STACK_KEYS.forEach(s => {
+      initialHand[s] = decks[s][0] || null;
+      initialPool[s] = decks[s].slice(1);
     });
     const initialQueue = [rollTicket(0), rollTicket(0), rollTicket(0)];
-    setUsesRemaining(initialUses);
+    setPool(initialPool);
     setHand(initialHand);
     setDeployed([]);
     setTickets(initialQueue);
@@ -899,6 +998,7 @@ export default function OnCall() {
     setCredits(0);
     setStrikes(3);
     setResolved(0);
+    setMercyArmed(false);
     setLastCommand(null);
     setClosedTickets([]);
     setViewingClosedUid(null);
@@ -934,12 +1034,12 @@ export default function OnCall() {
     if (!card) return;
 
     const newDeployed = [...deployed, card];
-    const newUses = { ...usesRemaining, [stack]: usesRemaining[stack] - 1 };
-    const newHand = {
-      ...hand,
-      [stack]: newUses[stack] > 0 ? generateCard(stack) : null,
-    };
-    setUsesRemaining(newUses);
+    // Pop the next pool card into hand; null if the pool for this stack is dry.
+    const newPoolForStack = pool[stack] || [];
+    const nextCard = newPoolForStack[0] || null;
+    const newPool = { ...pool, [stack]: newPoolForStack.slice(1) };
+    const newHand = { ...hand, [stack]: nextCard };
+    setPool(newPool);
     setHand(newHand);
     setLastCommand({
       cmd: `git cherry-pick ${card.sha}`,
@@ -959,12 +1059,20 @@ export default function OnCall() {
     const sha = Math.floor(Math.random() * 0xfffffff).toString(16).padStart(7, '0');
 
     const remainingInbox  = tickets.filter(t => t.uid !== activeUid);
-    const skip            = skipPenaltyFor(ticket, remainingInbox);
+    const skipRaw         = skipPenaltyFor(ticket, remainingInbox);
+    // Scale skip penalty by the resolved ticket's reward multiplier — closing
+    // a low-priority ticket for ×2 credits while a prio-1 sits in the inbox
+    // now actually costs proportional velocity.
+    const skipTotalScaled = skipRaw.total * ticket.reward;
+    const skipScaled      = {
+      total: skipTotalScaled,
+      skipped: skipRaw.skipped.map(s => ({ ...s, penalty: s.penalty * ticket.reward })),
+    };
 
     let result;
     if (success) {
       const earned = score.total * ticket.reward;
-      result = { success: true, ...score, earned, cards: deployedCards, sha, skipPenalty: skip.total, skipped: skip.skipped };
+      result = { success: true, ...score, earned, cards: deployedCards, sha, skipPenalty: skipScaled.total, skipped: skipScaled.skipped };
     } else {
       let why;
       if (score.tainted) {
@@ -975,17 +1083,26 @@ export default function OnCall() {
           .map(r => `${STACKS[r.stack].name} short: ${r.effective}/${r.threshold}`)
           .join(' · ');
       }
-      result = { success: false, ...score, msg: why, cards: deployedCards, sha, skipPenalty: skip.total, skipped: skip.skipped };
+      result = { success: false, ...score, msg: why, cards: deployedCards, sha, skipPenalty: skipScaled.total, skipped: skipScaled.skipped };
     }
 
     const newClosed       = [...closedTickets, { ticket, result }];
     const newStrikes      = success ? strikes : strikes - 1;
-    const newCredits      = (success ? credits + result.earned : credits) - skip.total;
+    const newCredits      = (success ? credits + result.earned : credits) - skipScaled.total;
     const nextResolved    = resolved + (success ? 1 : 0);
     // Game ends on 3 rejections, or when the player can't field another
     // 3-card deploy out of the remaining fix pool.
-    const remainingFixes  = Object.values(newUses).reduce((a, b) => a + b, 0);
+    const remainingFixes  = STACK_KEYS.reduce(
+      (sum, s) => sum + (newHand[s] ? 1 : 0) + (newPool[s]?.length || 0),
+      0
+    );
     const isOver          = newStrikes <= 0 || remainingFixes < 3;
+
+    // Anti-snowball: failing down to the last life arms a mercy flag that
+    // makes the very next rolled ticket softer (see rollTicket call below).
+    if (!isOver && !success && newStrikes === 1) {
+      setMercyArmed(true);
+    }
 
     setDeployed([]);
     setCredits(newCredits);
@@ -1012,7 +1129,9 @@ export default function OnCall() {
         },
       ]);
     } else {
-      setTickets([...remainingInbox, rollTicket(nextResolved)]);
+      const nextTicket = rollTicket(nextResolved, { mercy: mercyArmed });
+      if (mercyArmed) setMercyArmed(false);
+      setTickets([...remainingInbox, nextTicket]);
     }
   }
 
@@ -1173,7 +1292,7 @@ export default function OnCall() {
                   command={`git tag -l 'fix-*-pending' | awk -F- '{print $2}' | uniq -c`}
                   comment="placements remaining per stack"
                 />
-                <StackPoolList usesRemaining={usesRemaining} />
+                <StackPoolList usesRemaining={usesRemaining} legendaryRemaining={legendaryRemaining} />
 
                 <TerminalPrompt command="git log -4 fix-candidates --oneline" comment="tap to cherry-pick into deploy" />
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', padding: '0 10px 4px' }}>
@@ -1867,7 +1986,7 @@ function ScrollbackLine({ command }) {
 
 // Per-stack pool bar — shown in the terminal (engineer's resources)
 // Per-stack pool — shown as terminal command output (uniq -c style).
-function StackPoolList({ usesRemaining }) {
+function StackPoolList({ usesRemaining, legendaryRemaining }) {
   return (
     <div style={{
       padding: '4px 14px 10px',
@@ -1875,6 +1994,44 @@ function StackPoolList({ usesRemaining }) {
       fontFamily: "'JetBrains Mono', monospace",
       borderBottom: `1px solid ${C.termBorder}`,
     }}>
+      {/* legendaries-remaining readout — sits above the per-stack counts so the
+          player can plan rescues. Goes faint when none are left in the deck. */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: '12px',
+        padding: '1px 0 4px',
+        lineHeight: 1.4,
+      }}>
+        <span style={{
+          color: legendaryRemaining > 0 ? C.legendary : C.faint,
+          fontVariantNumeric: 'tabular-nums',
+          textAlign: 'right',
+          minWidth: '24px',
+          fontWeight: 700,
+        }}>
+          {legendaryRemaining}
+        </span>
+        <span style={{
+          color: legendaryRemaining > 0 ? C.legendary : C.faint,
+          fontWeight: 700,
+          fontSize: '0.7rem',
+          letterSpacing: '0.04em',
+        }}>
+          ★ legendary
+        </span>
+        {legendaryRemaining === 0 && (
+          <span style={{
+            color: C.faint,
+            fontSize: '0.6rem',
+            fontStyle: 'italic',
+            letterSpacing: '0.05em',
+            marginLeft: '4px',
+          }}>
+            none in deck
+          </span>
+        )}
+      </div>
       {STACK_KEYS.map(s => {
         const remaining = usesRemaining[s] ?? 0;
         const isLow = remaining > 0 && remaining <= 3;
@@ -2216,6 +2373,18 @@ function ClosedTicketCard({ ticket, result }) {
             letterSpacing: '0.05em',
           }}>✕ {blk.name}</span>
         )}
+        {ticket.mercy && (
+          <span style={{
+            fontSize: '0.6rem',
+            fontWeight: 700,
+            color: C.success,
+            padding: '2px 6px',
+            border: `1px solid ${C.success}`,
+            borderRadius: '3px',
+            letterSpacing: '0.08em',
+            marginLeft: 'auto',
+          }}>MERCY</span>
+        )}
       </div>
 
       {/* title */}
@@ -2529,19 +2698,19 @@ function IntroScreen({ onStart }) {
 
       <MdH2>priority &amp; skip penalty</MdH2>
       <MdP>
-        Severity is <MdCode color={C.danger}>prio-1</MdCode> (most urgent), <MdCode color={C.warning}>prio-2</MdCode>, <MdCode>prio-3</MdCode>. You may close them in any order — but resolving <MdCode>prio-n</MdCode> while a stricter <MdCode>prio-m</MdCode> (<MdCode>m &lt; n</MdCode>) sits in the inbox deducts <MdCode color={C.danger}>−((3 − m) × 3 + n − m)</MdCode> velocity per skipped ticket. Penalties stack.
+        Severity is <MdCode color={C.danger}>prio-1</MdCode> (most urgent), <MdCode color={C.warning}>prio-2</MdCode>, <MdCode>prio-3</MdCode>. You may close them in any order — but resolving <MdCode>prio-n</MdCode> while a stricter <MdCode>prio-m</MdCode> (<MdCode>m &lt; n</MdCode>) sits in the inbox deducts <MdCode color={C.danger}>−((3 − m) × 3 + n − m) × (resolved ticket's multiplier)</MdCode> velocity per skipped ticket. The multiplier scaling means cheap closes feel cheap and great closes still pay — but ducking a prio-1 for a cushy prio-3 stings.
       </MdP>
       <MdUL>
-        <MdLI>Skip a <MdCode color={C.danger}>prio-1</MdCode> to close a <MdCode>prio-3</MdCode> → <MdCode color={C.danger}>−8</MdCode></MdLI>
-        <MdLI>Skip a <MdCode color={C.danger}>prio-1</MdCode> to close a <MdCode color={C.warning}>prio-2</MdCode> → <MdCode color={C.danger}>−7</MdCode></MdLI>
-        <MdLI>Skip a <MdCode color={C.warning}>prio-2</MdCode> to close a <MdCode>prio-3</MdCode> → <MdCode color={C.danger}>−4</MdCode></MdLI>
+        <MdLI>Skip a <MdCode color={C.danger}>prio-1</MdCode> to close a <MdCode>prio-3</MdCode> (×2) → <MdCode color={C.danger}>−16</MdCode></MdLI>
+        <MdLI>Skip a <MdCode color={C.danger}>prio-1</MdCode> to close a <MdCode color={C.warning}>prio-2</MdCode> (×4) → <MdCode color={C.danger}>−28</MdCode></MdLI>
+        <MdLI>Skip a <MdCode color={C.warning}>prio-2</MdCode> to close a <MdCode>prio-3</MdCode> (×2) → <MdCode color={C.danger}>−8</MdCode></MdLI>
       </MdUL>
 
       <MdH2>fix cards</MdH2>
       <MdUL>
         <MdLI><MdB>Value:</MdB> <MdCode>1</MdCode>–<MdCode>13</MdCode> effort points contributed to the card's stack.</MdLI>
         <MdLI><MdB color={C.warning}>★ sequence bonus</MdB> (~half of cards): extra points if the placement condition is met. The hand highlights amber with <MdCode color={C.success}>✓ ready</MdCode> when it would fire on the next pick.</MdLI>
-        <MdLI><MdB color={C.danger}>Bugged (~18%):</MdB> looks normal in hand, scored as <MdCode color={C.danger}>−⌊value/2⌋</MdCode> after placement. Bonuses still fire on bugged cards.</MdLI>
+        <MdLI><MdB color={C.danger}>Bugged:</MdB> exactly <MdCode>6</MdCode> per shift (~15% of draws) — scored as <MdCode color={C.danger}>−⌊value/2⌋</MdCode> after placement. Look for the <MdCode color={C.danger}>patch:</MdCode> prefix in the description — it's the soft tell. Bonuses still fire on bugged cards.</MdLI>
         <MdLI><MdB color={C.danger}>Cherry-picks are final</MdB> — no revert once a card lands in the deploy.</MdLI>
       </MdUL>
 
@@ -2556,7 +2725,7 @@ function IntroScreen({ onStart }) {
 
       <MdH2>★ legendary fixes</MdH2>
       <MdP>
-        Roughly <MdCode>4%</MdCode> of draws produce a <MdB color={C.legendary}>legendary fix</MdB> instead of a normal one — gold-tinted, attributed to a famous programmer (Linus Torvalds, Ada Lovelace, Grace Hopper, &amp; co). They have one job:
+        Exactly <MdCode>2</MdCode> <MdB color={C.legendary}>legendary fixes</MdB> are seeded into the deck each shift — gold-tinted, attributed to a famous programmer (Linus Torvalds, Ada Lovelace, Grace Hopper, &amp; co). The terminal shows how many remain in the deck so you can plan around them.
       </MdP>
       <MdUL>
         <MdLI>One legendary in your 3-card deploy <MdB color={C.success}>auto-passes</MdB> every requirement and ignores the blocked stack.</MdLI>
@@ -2568,6 +2737,11 @@ function IntroScreen({ onStart }) {
         <span style={{ color: C.faint, fontStyle: 'italic' }}>
           Burn them on an impossible blocked-stack incident, or save them for a prio-1 you'd otherwise have to skip. Three legendaries in a row clears a ticket for zero velocity — sometimes that's still the right call.
         </span>
+      </MdP>
+
+      <MdH2>mercy</MdH2>
+      <MdP>
+        Drop to your last strike on a rejection and the very next inbox ticket arrives with a <MdB color={C.success}>MERCY</MdB> tag: tier drops by one, no blocked stack. Single-shot anti-snowball — it doesn't trigger twice in a row.
       </MdP>
 
       <MdH2>combo bonuses</MdH2>
@@ -2687,6 +2861,18 @@ function TicketCard({ ticket, preview }) {
             borderRadius: '3px',
             letterSpacing: '0.05em',
           }}>✕ {blk.name}</span>
+        )}
+        {ticket.mercy && (
+          <span style={{
+            fontSize: '0.6rem',
+            fontWeight: 700,
+            color: C.success,
+            padding: '2px 6px',
+            border: `1px solid ${C.success}`,
+            borderRadius: '3px',
+            letterSpacing: '0.08em',
+            marginLeft: 'auto',
+          }}>MERCY</span>
         )}
       </div>
 
