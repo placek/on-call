@@ -50,9 +50,9 @@ const FONTS_CSS = `
   }
 
   [data-theme="light"] {
-    --bg: #ffffff;
-    --panel: #f6f8fa;
-    --panel2: #eaeef2;
+    --bg: #e6eaf0;
+    --panel: #f0f3f7;
+    --panel2: #ffffff;
     --border: #d0d7de;
     --borderHi: #afb8c1;
     --text: #1f2328;
