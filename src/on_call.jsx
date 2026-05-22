@@ -6,6 +6,12 @@ import { FIXES, TICKET_POOL, HOST_WORDS, HOST_TLDS, HOST_SPLITS } from './conten
 //  Pick 3 fixes, ship a deploy, resolve the ticket. Don't get paged off.
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Theme — two palettes exposed as CSS variables. C maps each token to a
+//  var(--…) reference, so every component re-reads its colors as soon as
+//  data-theme on the root changes. No component code knows about themes.
+// ─────────────────────────────────────────────────────────────────────────────
+
 const FONTS_CSS = `
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap');
   @keyframes pulse {
@@ -16,33 +22,83 @@ const FONTS_CSS = `
     0%, 100% { box-shadow: 0 0 14px rgba(248, 81, 73, 0.20); }
     50%      { box-shadow: 0 0 22px rgba(248, 81, 73, 0.40); }
   }
+
+  html, body {
+    background: var(--bg);
+    color: var(--text);
+    transition: background 0.2s ease, color 0.2s ease;
+  }
+
+  [data-theme="dark"] {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel2: #1c2128;
+    --border: #30363d;
+    --borderHi: #484f58;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --faint: #6e7681;
+    --success: #3fb950;
+    --danger: #f85149;
+    --warning: #d29922;
+    --accent: #58a6ff;
+    --trackerBg: #1a1f26;
+    --trackerHead: #232a33;
+    --trackerBorder: #2d3441;
+    --termBg: #0a0d11;
+    --termHead: #161b22;
+    --termBorder: #21262d;
+    --termText: #d1d7e0;
+    --termPrompt: #3fb950;
+  }
+
+  [data-theme="light"] {
+    --bg: #ffffff;
+    --panel: #f6f8fa;
+    --panel2: #eaeef2;
+    --border: #d0d7de;
+    --borderHi: #afb8c1;
+    --text: #1f2328;
+    --muted: #59636e;
+    --faint: #818b98;
+    --success: #1a7f37;
+    --danger: #cf222e;
+    --warning: #9a6700;
+    --accent: #0969da;
+    --trackerBg: #ffffff;
+    --trackerHead: #f6f8fa;
+    --trackerBorder: #d8dee4;
+    --termBg: #f6f8fa;
+    --termHead: #eaeef2;
+    --termBorder: #d0d7de;
+    --termText: #1f2328;
+    --termPrompt: #1a7f37;
+  }
 `;
 
 const C = {
-  bg:       '#0d1117',
-  panel:    '#161b22',
-  panel2:   '#1c2128',
-  border:   '#30363d',
-  borderHi: '#484f58',
-  text:     '#e6edf3',
-  muted:    '#8b949e',
-  faint:    '#6e7681',
-  success:  '#3fb950',
-  danger:   '#f85149',
-  warning:  '#d29922',
-  accent:   '#58a6ff',
+  bg:       'var(--bg)',
+  panel:    'var(--panel)',
+  panel2:   'var(--panel2)',
+  border:   'var(--border)',
+  borderHi: 'var(--borderHi)',
+  text:     'var(--text)',
+  muted:    'var(--muted)',
+  faint:    'var(--faint)',
+  success:  'var(--success)',
+  danger:   'var(--danger)',
+  warning:  'var(--warning)',
+  accent:   'var(--accent)',
 
-  // Tracker panel — slightly lifted, app-like
-  trackerBg:     '#1a1f26',
-  trackerHead:   '#232a33',
-  trackerBorder: '#2d3441',
+  trackerBg:     'var(--trackerBg)',
+  trackerHead:   'var(--trackerHead)',
+  trackerBorder: 'var(--trackerBorder)',
 
-  // Terminal panel — deeper, with subtle CRT vibe
-  termBg:        '#0a0d11',
-  termHead:      '#161b22',
-  termBorder:    '#21262d',
-  termText:      '#d1d7e0',
-  termPrompt:    '#3fb950',
+  termBg:        'var(--termBg)',
+  termHead:      'var(--termHead)',
+  termBorder:    'var(--termBorder)',
+  termText:      'var(--termText)',
+  termPrompt:    'var(--termPrompt)',
 };
 
 const STACKS = {
@@ -689,6 +745,21 @@ export default function OnCall() {
   // use on restart.
   const [nextHost, setNextHost] = useState(null);
 
+  // Theme — 'dark' (default) or 'light'. Persisted to localStorage.
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem('oncall:theme') || 'dark';
+    } catch {
+      return 'dark';
+    }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('oncall:theme', theme); } catch {}
+    // Stamp data-theme on <html> so CSS variables resolve at the document
+    // root — that way html, body, and every descendant inherit the palette.
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
   const ticket = useMemo(
     () => tickets.find(t => t.uid === activeUid) || null,
     [tickets, activeUid]
@@ -856,11 +927,12 @@ export default function OnCall() {
   }, [deployed, ticket]);
 
   return (
-    <div style={{
+    <div data-theme={theme} style={{
       background: C.bg,
       color: C.text,
       fontFamily: "'JetBrains Mono', monospace",
       padding: '12px',
+      transition: 'background 0.2s ease, color 0.2s ease',
     }}>
       <style>{FONTS_CSS}</style>
 
@@ -870,7 +942,7 @@ export default function OnCall() {
         <>
           {/* ─── Tracker panel ──── manager's view ──── */}
           <TrackerPanel>
-            <TrackerHeader resolved={resolved} />
+            <TrackerHeader onShift={phase === 'playing'} />
             <TrackerStats credits={credits} strikes={strikes} resolved={resolved} />
 
             <div style={{
@@ -1034,7 +1106,66 @@ export default function OnCall() {
           </TerminalPanel>
         </>
       )}
+
+      <ThemeSwitch theme={theme} onChange={setTheme} />
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Theme switch — anchored at the bottom of the page. Two pill segments
+//  (Dark / Light) with the active one filled in. Changes propagate via the
+//  data-theme attribute on the root and the CSS variables defined in
+//  FONTS_CSS, so every component re-reads its colors automatically.
+// ─────────────────────────────────────────────────────────────────────────────
+function ThemeSwitch({ theme, onChange }) {
+  return (
+    <div style={{
+      display: 'flex',
+      justifyContent: 'center',
+      marginTop: '14px',
+      paddingBottom: '6px',
+    }}>
+      <div style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        padding: '3px',
+        background: C.trackerBg,
+        border: `1px solid ${C.trackerBorder}`,
+        borderRadius: '999px',
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        boxShadow: '0 1px 0 rgba(255,255,255,0.04) inset',
+      }}>
+        <ThemeOption label="Dark"  icon="●" active={theme === 'dark'}  onClick={() => onChange('dark')}  />
+        <ThemeOption label="Light" icon="○" active={theme === 'light'} onClick={() => onChange('light')} />
+      </div>
+    </div>
+  );
+}
+
+function ThemeOption({ label, icon, active, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '6px',
+        padding: '5px 12px',
+        background: active ? C.panel2 : 'transparent',
+        color: active ? C.text : C.muted,
+        border: `1px solid ${active ? C.borderHi : 'transparent'}`,
+        borderRadius: '999px',
+        fontSize: '0.7rem',
+        fontWeight: 600,
+        letterSpacing: '0.02em',
+        cursor: 'pointer',
+        transition: 'background 0.15s ease, color 0.15s ease, border-color 0.15s ease',
+      }}
+    >
+      <span style={{ fontSize: '0.65rem' }}>{icon}</span>
+      {label}
+    </button>
   );
 }
 
@@ -1072,68 +1203,100 @@ function TrackerPanel({ children }) {
       borderRadius: '10px',
       overflow: 'hidden',
       marginBottom: '10px',
-      boxShadow: '0 1px 0 rgba(255,255,255,0.04) inset',
+      boxShadow: '0 6px 32px rgba(0,0,0,0.5), 0 1px 0 rgba(255,255,255,0.04) inset',
     }}>
       {children}
     </div>
   );
 }
 
-function TrackerHeader({ resolved, shifts }) {
+// Window chrome for the triage panel — mirrors the terminal so the two
+// panels read as a pair of desktop windows. Left: traffic-light dots.
+// Centered: the window/app title. Right: the on-shift status badge.
+function TrackerHeader({ onShift }) {
   return (
     <div style={{
       display: 'flex',
       alignItems: 'center',
-      justifyContent: 'space-between',
-      padding: '10px 14px',
+      padding: '8px 12px',
       background: `linear-gradient(180deg, ${C.trackerHead}, ${C.trackerBg})`,
       borderBottom: `1px solid ${C.trackerBorder}`,
+      gap: '10px',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-        <div style={{
-          width: '20px',
-          height: '20px',
-          borderRadius: '5px',
+      {/* traffic lights — same shape/colors as the terminal window */}
+      <div style={{ display: 'flex', gap: '6px' }}>
+        <Dot color="#ff5f57" />
+        <Dot color="#febc2e" />
+        <Dot color="#28c840" />
+      </div>
+
+      {/* centered window title — app name + workspace breadcrumb */}
+      <div style={{
+        flex: 1,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '8px',
+        fontSize: '0.7rem',
+        color: C.muted,
+        letterSpacing: '0.04em',
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        overflow: 'hidden',
+        whiteSpace: 'nowrap',
+        minWidth: 0,
+      }}>
+        {/* tiny app icon */}
+        <span style={{
+          width: '14px',
+          height: '14px',
+          borderRadius: '3px',
           background: `linear-gradient(135deg, ${C.accent}, #1f6feb)`,
-          display: 'flex',
+          display: 'inline-flex',
           alignItems: 'center',
           justifyContent: 'center',
           color: '#fff',
           fontWeight: 900,
-          fontSize: '0.7rem',
+          fontSize: '0.55rem',
           boxShadow: '0 1px 2px rgba(0,0,0,0.4)',
-        }}>
-          T
-        </div>
-        <div>
-          <div style={{
-            fontSize: '0.78rem',
-            fontWeight: 700,
-            letterSpacing: '0.06em',
-            color: C.text,
-          }}>
-            TRIAGE
-          </div>
-          <div style={{ fontSize: '0.58rem', color: C.faint, letterSpacing: '0.05em', marginTop: '-1px' }}>
-            ticket tracker
-          </div>
-        </div>
+          flexShrink: 0,
+        }}>T</span>
+        <span style={{ fontWeight: 600, color: C.text }}>Triage</span>
+        <span style={{ color: C.faint }}>—</span>
+        <span style={{ color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          ticket-tracker · main
+        </span>
       </div>
+
+      {/* status pill — replaces the terminal's empty right slot.
+          Goes dim between games (phase === 'over') and lights up while playing. */}
       <div style={{
         display: 'flex',
         alignItems: 'center',
         gap: '6px',
+        padding: '3px 8px',
+        borderRadius: '10px',
+        background: onShift ? 'rgba(63,185,80,0.08)' : 'rgba(139,148,158,0.06)',
+        border: `1px solid ${onShift ? 'rgba(63,185,80,0.25)' : C.trackerBorder}`,
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        flexShrink: 0,
+        transition: 'background 0.2s ease, border-color 0.2s ease',
       }}>
         <span style={{
           display: 'inline-block',
           width: '6px',
           height: '6px',
           borderRadius: '50%',
-          background: C.success,
-          boxShadow: `0 0 6px ${C.success}`,
+          background: onShift ? C.success : C.faint,
+          boxShadow: onShift ? `0 0 6px ${C.success}` : 'none',
+          transition: 'background 0.2s ease, box-shadow 0.2s ease',
         }} />
-        <span style={{ fontSize: '0.6rem', color: C.muted, letterSpacing: '0.05em' }}>
-          ON SHIFT · {resolved} resolved
+        <span style={{
+          fontSize: '0.6rem',
+          color: onShift ? C.muted : C.faint,
+          letterSpacing: '0.05em',
+          fontWeight: 600,
+        }}>
+          {onShift ? 'ON SHIFT' : 'OFF SHIFT'}
         </span>
       </div>
     </div>
@@ -1247,18 +1410,46 @@ function TerminalHeader({ host }) {
       </div>
       <div style={{
         flex: 1,
-        textAlign: 'center',
-        fontSize: '0.65rem',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '8px',
+        fontSize: '0.7rem',
         color: C.muted,
-        letterSpacing: '0.05em',
-        fontFamily: "'JetBrains Mono', monospace",
+        letterSpacing: '0.04em',
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
         overflow: 'hidden',
-        textOverflow: 'ellipsis',
         whiteSpace: 'nowrap',
+        minWidth: 0,
       }}>
-        dev@{host || 'localhost'}: /srv/app/current · zsh
+        {/* tiny app icon — mirrors the triage window */}
+        <span style={{
+          width: '14px',
+          height: '14px',
+          borderRadius: '3px',
+          background: `linear-gradient(135deg, #2d3441, #0a0d11)`,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          color: C.termPrompt,
+          fontWeight: 900,
+          fontSize: '0.55rem',
+          fontFamily: "'JetBrains Mono', monospace",
+          boxShadow: '0 1px 2px rgba(0,0,0,0.4)',
+          flexShrink: 0,
+        }}>{'>_'}</span>
+        <span style={{ fontWeight: 600, color: C.text }}>Terminal</span>
+        <span style={{ color: C.faint }}>—</span>
+        <span style={{
+          color: C.muted,
+          fontFamily: "'JetBrains Mono', monospace",
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+        }}>
+          dev@{host || 'localhost'}: /srv/app/current · zsh
+        </span>
       </div>
-      <div style={{ width: '36px' }} />
+      <div style={{ width: '36px', flexShrink: 0 }} />
     </div>
   );
 }

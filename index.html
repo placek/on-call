@@ -4,8 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>On-Call</title>
+    <script>
+      // Set the theme attribute before paint so html/body background never
+      // flashes the wrong palette. The React app keeps this attribute in
+      // sync afterwards via useEffect.
+      (function () {
+        try {
+          var t = localStorage.getItem('oncall:theme') || 'dark';
+          document.documentElement.setAttribute('data-theme', t);
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
   </head>
-  <body style="margin:0;background:#0d1117;">
+  <body style="margin:0;">
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
