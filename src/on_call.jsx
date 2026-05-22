@@ -1354,6 +1354,36 @@ export default function OnCall() {
 
       <ThemeSwitch theme={theme} onChange={setTheme} />
       <HistoryPanel history={history} open={showHistory} onToggle={() => setShowHistory(v => !v)} />
+
+      <div style={{
+        display: 'flex',
+        justifyContent: 'center',
+        padding: '4px 0 14px',
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        fontSize: '0.65rem',
+        color: C.faint,
+      }}>
+        <a
+          href="https://github.com/placek/on-call"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            color: C.faint,
+            textDecoration: 'none',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '4px 8px',
+            borderRadius: '4px',
+            transition: 'color 0.15s ease',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.color = C.accent; }}
+          onMouseLeave={e => { e.currentTarget.style.color = C.faint; }}
+        >
+          <span style={{ fontSize: '0.7rem' }}>↗</span>
+          github.com/placek/on-call
+        </a>
+      </div>
     </div>
   );
 }
