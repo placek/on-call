@@ -144,6 +144,20 @@ function genHost() {
   }
 }
 
+// Derive a JIRA-style project key from a hostname. Splits on `.` and `-`,
+// takes the first letter of each token, uppercased, capped at 4 chars.
+// Falls back to "TKT" when given nothing.
+function projectKey(host) {
+  if (!host) return 'TKT';
+  const letters = host
+    .split(/[.-]/)
+    .filter(Boolean)
+    .map(t => t[0])
+    .join('')
+    .toUpperCase();
+  return letters.slice(0, 4) || 'TKT';
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Sequence bonuses — optional rules attached to fix cards.
 //  When a card's bonus condition is met by its position in the deploy package,
@@ -362,7 +376,8 @@ function rollTicket(resolved, opts = {}) {
   }
 
   const severity = tier === 1 ? 'prio-3' : tier === 2 ? 'prio-2' : 'prio-1';
-  const ticketId = 'TKT-' + (1000 + Math.floor(Math.random() * 9000));
+  const prefix = opts.projectKey || 'TKT';
+  const ticketId = `${prefix}-${1000 + Math.floor(Math.random() * 9000)}`;
 
   return {
     ...base,
@@ -557,7 +572,7 @@ function scoreDeploy(cards, ticket) {
 //  Tapping places it into the next deploy slot.
 // ─────────────────────────────────────────────────────────────────────────────
 
-function HandCard({ stack, card, remaining, blocked, deployFull, deployed, phase, onClick }) {
+function HandCard({ stack, card, blocked, deployFull, deployed, phase, onClick }) {
   const s = STACKS[stack];
   const isEmpty = !card;
   const bonusFiresNow = card && card.bonus && bonusWouldFireIfPlacedNow(card.bonus, deployed);
@@ -693,9 +708,6 @@ function HandCard({ stack, card, remaining, blocked, deployFull, deployed, phase
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
         }}>
           {card.description}
-        </div>
-        <div style={{ fontSize: '0.6rem', color: C.faint, flexShrink: 0 }}>
-          ×{remaining}
         </div>
       </div>
 
@@ -1004,7 +1016,15 @@ export default function OnCall() {
       initialHand[s] = decks[s][0] || null;
       initialPool[s] = decks[s].slice(1);
     });
-    const initialQueue = [rollTicket(0), rollTicket(0), rollTicket(0)];
+    // Pin the host for this shift up front so the initial queue's ticket IDs
+    // already use the new project key (state setters wouldn't have flushed yet).
+    const shiftHost = nextHost || genHost();
+    const key = projectKey(shiftHost);
+    const initialQueue = [
+      rollTicket(0, { projectKey: key }),
+      rollTicket(0, { projectKey: key }),
+      rollTicket(0, { projectKey: key }),
+    ];
     setPool(initialPool);
     setHand(initialHand);
     setDeployed([]);
@@ -1017,9 +1037,7 @@ export default function OnCall() {
     setLastCommand(null);
     setClosedTickets([]);
     setViewingClosedUid(null);
-    // If we're coming from an over screen, adopt the host shown on the
-    // restart prompt so the new terminal header matches what was clicked.
-    setHost(nextHost || genHost());
+    setHost(shiftHost);
     setNextHost(null);
     setPhase('playing');
   }
@@ -1144,7 +1162,7 @@ export default function OnCall() {
         },
       ]);
     } else {
-      const nextTicket = rollTicket(nextResolved, { mercy: mercyArmed });
+      const nextTicket = rollTicket(nextResolved, { mercy: mercyArmed, projectKey: projectKey(host) });
       if (mercyArmed) setMercyArmed(false);
       setTickets([...remainingInbox, nextTicket]);
     }
@@ -1213,8 +1231,12 @@ export default function OnCall() {
               flexWrap: 'wrap',
               padding: '0 0 10px',
             }}>
-              {/* LEFT: inbox queue */}
-              <div style={{ flex: '1 1 240px', maxWidth: '300px', minWidth: 0 }}>
+              {/* LEFT: inbox queue — full width on narrow viewports */}
+              <div style={{
+                flex: narrow ? '1 1 100%' : '1 1 240px',
+                maxWidth: narrow ? '100%' : '300px',
+                minWidth: 0,
+              }}>
                 <TrackerSection
                   label="INBOX"
                   count={tickets.length}
@@ -1268,8 +1290,12 @@ export default function OnCall() {
                 </div>
               </div>
 
-              {/* RIGHT: closed tickets */}
-              <div style={{ flex: '1 1 220px', maxWidth: '280px', minWidth: 0 }}>
+              {/* RIGHT: closed tickets — full width on narrow viewports */}
+              <div style={{
+                flex: narrow ? '1 1 100%' : '1 1 220px',
+                maxWidth: narrow ? '100%' : '280px',
+                minWidth: 0,
+              }}>
                 <TrackerSection label="DONE" count={closedTickets.length} />
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '0 14px 0 10px' }}>
                   {closedTickets.length === 0 ? (
@@ -1318,7 +1344,6 @@ export default function OnCall() {
                       key={s}
                       stack={s}
                       card={hand[s]}
-                      remaining={usesRemaining[s]}
                       blocked={ticket && s === ticket.blocked}
                       deployFull={deployed.length >= 3}
                       deployed={deployed}
@@ -1416,6 +1441,16 @@ function HistoryPanel({ history, open, onToggle }) {
     () => [...history].sort((a, b) => b.credits - a.credits),
     [history]
   );
+  // Mood lookup by run id — derived from the chronological order so each
+  // sprint is compared against the one immediately before it.
+  const moodById = useMemo(() => {
+    const chrono = [...history].sort((a, b) => new Date(a.at) - new Date(b.at));
+    const m = {};
+    chrono.forEach((r, i) => {
+      m[r.id] = moodForSprint(r, i > 0 ? chrono[i - 1] : null);
+    });
+    return m;
+  }, [history]);
   return (
     <div style={{
       maxWidth: '720px',
@@ -1444,7 +1479,7 @@ function HistoryPanel({ history, open, onToggle }) {
           <span style={{ fontSize: '0.65rem', color: C.faint }}>
             {open ? '▾' : '▸'}
           </span>
-          previous runs
+          the sprints summary
           <span style={{
             fontSize: '0.6rem',
             fontWeight: 500,
@@ -1463,6 +1498,8 @@ function HistoryPanel({ history, open, onToggle }) {
           borderRadius: '8px',
           overflow: 'hidden',
         }}>
+          <SprintsChart history={history} />
+
           {/* table header — desktop only; on narrow each row is self-labeled */}
           {!narrow && (
             <div style={{
@@ -1498,6 +1535,9 @@ function HistoryPanel({ history, open, onToggle }) {
           ) : (
             sorted.map((r, i) => {
               const isTop = i === 0;
+              const mood = moodById[r.id] || 'neutral';
+              const mc = moodColor(mood);
+              const mg = moodGlyph(mood);
               if (narrow) {
                 // Mobile: rank + velocity on a primary line, meta on a secondary muted line.
                 return (
@@ -1507,8 +1547,17 @@ function HistoryPanel({ history, open, onToggle }) {
                       padding: '8px 12px',
                       borderBottom: i === sorted.length - 1 ? 'none' : `1px solid ${C.trackerBorder}`,
                       background: isTop ? C.panel2 : 'transparent',
+                      position: 'relative',
                     }}
                   >
+                    {/* mood color band on the left edge */}
+                    <div style={{
+                      position: 'absolute',
+                      left: 0, top: 0, bottom: 0,
+                      width: '3px',
+                      background: mc,
+                      opacity: 0.85,
+                    }} />
                     <div style={{
                       display: 'flex',
                       alignItems: 'baseline',
@@ -1529,6 +1578,13 @@ function HistoryPanel({ history, open, onToggle }) {
                         fontVariantNumeric: 'tabular-nums',
                       }}>
                         {r.credits}
+                      </span>
+                      <span style={{
+                        color: mc,
+                        fontWeight: 700,
+                        fontSize: '0.7rem',
+                      }} title={moodLabel(mood)}>
+                        {mg}
                       </span>
                       <span style={{
                         marginLeft: 'auto',
@@ -1568,8 +1624,17 @@ function HistoryPanel({ history, open, onToggle }) {
                     borderBottom: i === sorted.length - 1 ? 'none' : `1px solid ${C.trackerBorder}`,
                     background: isTop ? C.panel2 : 'transparent',
                     color: C.text,
+                    position: 'relative',
                   }}
                 >
+                  {/* mood color band on the left edge */}
+                  <div style={{
+                    position: 'absolute',
+                    left: 0, top: 0, bottom: 0,
+                    width: '3px',
+                    background: mc,
+                    opacity: 0.85,
+                  }} />
                   <span style={{
                     color: isTop ? C.success : C.faint,
                     fontVariantNumeric: 'tabular-nums',
@@ -1581,8 +1646,14 @@ function HistoryPanel({ history, open, onToggle }) {
                     color: isTop ? C.success : C.text,
                     fontWeight: 700,
                     fontVariantNumeric: 'tabular-nums',
+                    display: 'inline-flex',
+                    alignItems: 'baseline',
+                    gap: '6px',
                   }}>
                     {r.credits}
+                    <span style={{ color: mc, fontWeight: 700, fontSize: '0.7rem' }} title={moodLabel(mood)}>
+                      {mg}
+                    </span>
                   </span>
                   <span style={{
                     textAlign: 'right',
@@ -1635,6 +1706,360 @@ function formatRunDate(iso) {
   } catch {
     return iso;
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  PO expectations
+//   ≥ 90% of previous velocity → happy
+//   60–90%                     → concerned
+//   < 60%                      → disappointed
+//   first sprint (no baseline) → neutral
+//
+//  Streaks of non-happy moods escalate to a "PIP territory" banner;
+//  streaks of happy moods escalate to "PO ecstatic".
+// ─────────────────────────────────────────────────────────────────────────────
+function moodForSprint(curr, prev) {
+  if (!prev) return 'neutral';
+  if (prev.credits <= 0) return curr.credits >= prev.credits ? 'happy' : 'concerned';
+  const ratio = curr.credits / prev.credits;
+  if (ratio >= 0.9) return 'happy';
+  if (ratio >= 0.6) return 'concerned';
+  return 'disappointed';
+}
+
+function moodColor(mood) {
+  if (mood === 'happy') return C.success;
+  if (mood === 'concerned') return C.warning;
+  if (mood === 'disappointed') return C.danger;
+  return C.faint;
+}
+
+function moodGlyph(mood) {
+  if (mood === 'happy') return '✓';
+  if (mood === 'concerned') return '~';
+  if (mood === 'disappointed') return '↓';
+  return '·';
+}
+
+function moodLabel(mood) {
+  if (mood === 'happy') return 'PO happy';
+  if (mood === 'concerned') return 'PO concerned';
+  if (mood === 'disappointed') return 'PO disappointed';
+  return 'baseline sprint';
+}
+
+// Aggregate the trailing streak into a single status chip. Cumulative
+// non-happy sprints escalate; cumulative happy sprints celebrate.
+function poStatus(moods) {
+  if (moods.length === 0) return { label: '—', color: C.faint };
+  const last = moods[moods.length - 1];
+  let dip = 0;
+  for (let i = moods.length - 1; i >= 0; i--) {
+    if (moods[i] === 'happy' || moods[i] === 'neutral') break;
+    dip++;
+  }
+  let happy = 0;
+  for (let i = moods.length - 1; i >= 0; i--) {
+    if (moods[i] !== 'happy') break;
+    happy++;
+  }
+  if (dip >= 3) return { label: `PIP territory · ${dip} down`, color: C.danger };
+  if (happy >= 3) return { label: `PO ecstatic · ${happy} streak`, color: C.success };
+  return { label: moodLabel(last), color: moodColor(last) };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  SprintsChart — at-a-glance burndown-style view of past shifts. Each bar
+//  is one shift, chronological L→R. Encodes three aspects per sprint:
+//    height       → velocity (credits earned)
+//    color        → end reason  (green=depleted, red=paged)
+//    annotation   → resolved (·N) and rejected (·X) counts below the bar
+//  A dashed line shows the running personal best so the trend is obvious,
+//  and a ★ marks the bar that holds it.
+// ─────────────────────────────────────────────────────────────────────────────
+function SprintsChart({ history }) {
+  const chronological = useMemo(
+    () => [...history].sort((a, b) => new Date(a.at) - new Date(b.at)),
+    [history]
+  );
+
+  if (chronological.length === 0) {
+    return (
+      <div style={{
+        padding: '24px 12px',
+        textAlign: 'center',
+        color: C.faint,
+        fontStyle: 'italic',
+        fontSize: '0.72rem',
+        borderBottom: `1px solid ${C.trackerBorder}`,
+      }}>
+        no sprints yet — finish a shift to start the burndown
+      </div>
+    );
+  }
+
+  const maxCredits = Math.max(1, ...chronological.map(r => Math.max(0, r.credits)));
+  const bestIdx = chronological.reduce(
+    (bi, r, i, a) => (r.credits > a[bi].credits ? i : bi),
+    0
+  );
+  const totals = chronological.reduce(
+    (acc, r) => {
+      acc.resolved += r.resolved;
+      acc.rejected += r.rejected;
+      if (r.reason === 'paged') acc.paged++;
+      else acc.depleted++;
+      return acc;
+    },
+    { resolved: 0, rejected: 0, paged: 0, depleted: 0 }
+  );
+  const avgCredits = Math.round(
+    chronological.reduce((s, r) => s + r.credits, 0) / chronological.length
+  );
+
+  // PO mood per sprint (compared to the immediately previous sprint).
+  const moods = chronological.map(
+    (r, i) => moodForSprint(r, i > 0 ? chronological[i - 1] : null)
+  );
+  const po = poStatus(moods);
+
+  // SVG coordinate system — scales to its container via viewBox.
+  const W = 600;
+  const H = 210;
+  const padL = 32, padR = 12, padT = 36, padB = 44;
+  const innerW = W - padL - padR;
+  const innerH = H - padT - padB;
+  const n = chronological.length;
+  const barGap = Math.min(6, innerW / (n * 4));
+  const barW = (innerW - barGap * Math.max(0, n - 1)) / n;
+  const bestY = padT + innerH - (chronological[bestIdx].credits / maxCredits) * innerH;
+
+  return (
+    <div style={{ borderBottom: `1px solid ${C.trackerBorder}` }}>
+      {/* Top stats strip — quick read of the whole history */}
+      <div style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: '14px',
+        padding: '10px 14px 6px',
+        fontSize: '0.65rem',
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      }}>
+        <StatChip label="best" value={chronological[bestIdx].credits} color={C.legendary} />
+        <StatChip label="avg"  value={avgCredits}                     color={C.accent} />
+        <StatChip label="resolved" value={totals.resolved}             color={C.success} />
+        <StatChip label="paged"    value={totals.paged}                color={totals.paged > 0 ? C.danger : C.muted} />
+        <StatChip label="po" value={po.label} color={po.color} />
+      </div>
+
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        preserveAspectRatio="none"
+        style={{ width: '100%', height: '180px', display: 'block' }}
+      >
+        {/* y-axis baseline */}
+        <line
+          x1={padL} y1={padT + innerH}
+          x2={W - padR} y2={padT + innerH}
+          stroke={C.trackerBorder} strokeWidth="1"
+        />
+
+        {/* personal-best reference line */}
+        <line
+          x1={padL} y1={bestY}
+          x2={W - padR} y2={bestY}
+          stroke={C.legendary}
+          strokeWidth="1"
+          strokeDasharray="3 3"
+          opacity="0.55"
+        />
+        <text
+          x={padL - 4} y={bestY - 4}
+          fontSize="9"
+          fill={C.legendary}
+          textAnchor="end"
+          fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
+        >
+          best {chronological[bestIdx].credits}
+        </text>
+
+        {/* y-axis max label */}
+        <text
+          x={padL - 6} y={padT + 8}
+          fontSize="9"
+          fill={C.faint}
+          textAnchor="end"
+          fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
+        >
+          {maxCredits}
+        </text>
+        <text
+          x={padL - 6} y={padT + innerH}
+          fontSize="9"
+          fill={C.faint}
+          textAnchor="end"
+          fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
+        >
+          0
+        </text>
+
+        {/* bars */}
+        {chronological.map((r, i) => {
+          const x = padL + i * (barW + barGap);
+          const safe = Math.max(0, r.credits);
+          const h = (safe / maxCredits) * innerH;
+          const y = padT + innerH - h;
+          const color = r.reason === 'paged' ? C.danger : C.success;
+          const isBest = i === bestIdx;
+          const cx = x + barW / 2;
+          const mood = moods[i];
+          const mc = moodColor(mood);
+          const mg = moodGlyph(mood);
+          return (
+            <g key={r.id}>
+              <rect
+                x={x} y={y} width={barW} height={h}
+                fill={color}
+                opacity={isBest ? 1 : 0.78}
+              >
+                <title>{`#${i + 1} · ${r.credits} velocity · ${r.resolved} resolved · ${r.rejected} rejected · ${r.reason} · ${moodLabel(mood)} · ${formatRunDate(r.at)}`}</title>
+              </rect>
+              {isBest && (
+                <text
+                  x={cx} y={y - 26}
+                  fontSize="12"
+                  fill={C.legendary}
+                  textAnchor="middle"
+                  fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
+                >★</text>
+              )}
+              {/* PO mood glyph above each bar */}
+              <text
+                x={cx} y={y - 14}
+                fontSize="10"
+                fontWeight="700"
+                fill={mc}
+                textAnchor="middle"
+                fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
+              >
+                {mg}
+              </text>
+              {/* velocity number above each bar */}
+              <text
+                x={cx} y={y - 3}
+                fontSize="9"
+                fill={C.muted}
+                textAnchor="middle"
+                fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
+              >
+                {r.credits}
+              </text>
+              {/* resolved · rejected breakdown below bar */}
+              <text
+                x={cx} y={padT + innerH + 12}
+                fontSize="8.5"
+                fill={C.faint}
+                textAnchor="middle"
+                fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
+              >
+                ·{r.resolved}
+              </text>
+              <text
+                x={cx} y={padT + innerH + 24}
+                fontSize="8.5"
+                fill={r.rejected >= 3 ? C.danger : C.faint}
+                textAnchor="middle"
+                fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
+              >
+                ✗{r.rejected}
+              </text>
+            </g>
+          );
+        })}
+
+        {/* axis labels */}
+        <text
+          x={padL} y={H - 4}
+          fontSize="8"
+          fill={C.faint}
+          fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
+        >
+          oldest →
+        </text>
+        <text
+          x={W - padR} y={H - 4}
+          fontSize="8"
+          fill={C.faint}
+          textAnchor="end"
+          fontFamily="-apple-system, BlinkMacSystemFont, sans-serif"
+        >
+          ← newest
+        </text>
+      </svg>
+
+      {/* compact legend */}
+      <div style={{
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: '12px',
+        padding: '0 14px 10px',
+        fontSize: '0.6rem',
+        color: C.faint,
+        fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+      }}>
+        <LegendDot color={C.success}   label="ended depleted" />
+        <LegendDot color={C.danger}    label="paged off" />
+        <LegendDot color={C.legendary} label="personal best" />
+        <span style={{ marginLeft: 'auto', fontStyle: 'italic' }}>
+          PO: <span style={{ color: C.success }}>✓ happy</span> ·{' '}
+          <span style={{ color: C.warning }}>~ concerned</span> ·{' '}
+          <span style={{ color: C.danger }}>↓ disappointed</span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function StatChip({ label, value, color }) {
+  return (
+    <div style={{
+      display: 'inline-flex',
+      alignItems: 'baseline',
+      gap: '4px',
+    }}>
+      <span style={{
+        color: C.faint,
+        textTransform: 'uppercase',
+        letterSpacing: '0.06em',
+        fontWeight: 600,
+      }}>
+        {label}
+      </span>
+      <span style={{
+        color,
+        fontWeight: 700,
+        fontVariantNumeric: 'tabular-nums',
+        fontSize: '0.78rem',
+      }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function LegendDot({ color, label }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '5px' }}>
+      <span style={{
+        width: '8px',
+        height: '8px',
+        borderRadius: '2px',
+        background: color,
+        display: 'inline-block',
+      }} />
+      {label}
+    </span>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2018,11 +2443,6 @@ function TerminalPrompt({ command, comment, tone, onClick, disabled }) {
     padding: '6px 14px',
     fontSize: '0.7rem',
     fontFamily: "'JetBrains Mono', monospace",
-    display: 'flex',
-    alignItems: 'baseline',
-    flexWrap: 'wrap',
-    columnGap: '6px',
-    rowGap: '2px',
     // Buttons default to white-space:pre in some UAs; force normal so the
     // long-comment overflow-wrap inside actually triggers.
     whiteSpace: 'normal',
@@ -2034,30 +2454,31 @@ function TerminalPrompt({ command, comment, tone, onClick, disabled }) {
     opacity: disabled && onClick ? 0.5 : 1,
   };
 
+  // $ and the command share one wrappable text flow (inline spans inside a
+  // block) so a long command wraps under itself but never pushes the $
+  // glyph onto its own line. The comment lives in a separate block below,
+  // right-aligned via text-align (we no longer rely on flex for layout).
   const inner = (
     <>
-      <span style={{ color, fontWeight: 700, flexShrink: 0 }}>$</span>
-      <span style={{
+      <div style={{
         color: C.termText,
-        fontWeight: 600,
-        flex: '1 1 auto',
-        minWidth: 0,
         wordBreak: 'break-word',
         overflowWrap: 'anywhere',
-      }}>{command}</span>
+      }}>
+        <span style={{ color, fontWeight: 700, marginRight: '6px' }}>$</span>
+        <span style={{ fontWeight: 600 }}>{command}</span>
+      </div>
       {comment && (
-        <span style={{
+        <div style={{
           color: C.faint,
           fontStyle: 'italic',
-          // Force the comment onto its own line, anchored to the right.
-          // Long commands no longer push it past the terminal edge.
-          flex: '1 0 100%',
           textAlign: 'right',
+          marginTop: '2px',
           wordBreak: 'break-word',
           overflowWrap: 'anywhere',
         }}>
           # {comment}
-        </span>
+        </div>
       )}
     </>
   );
@@ -2137,7 +2558,7 @@ function StackPoolList({ usesRemaining, legendaryRemaining }) {
           fontSize: '0.7rem',
           letterSpacing: '0.04em',
         }}>
-          ★ legendary
+          legendary
         </span>
         {legendaryRemaining === 0 && (
           <span style={{
@@ -2209,7 +2630,6 @@ function QueueRow({ ticket, active, disabled, pickable, onClick }) {
     ticket.severity === 'prio-1' ? C.danger  :
     ticket.severity === 'prio-2' ? C.warning :
     C.muted;
-  const isMulti = ticket.requirements.length > 1;
 
   return (
     <button
@@ -2255,29 +2675,6 @@ function QueueRow({ ticket, active, disabled, pickable, onClick }) {
         {ticket.severity}
       </span>
 
-      {/* required stacks (joined with +) */}
-      <span style={{
-        display: 'flex',
-        alignItems: 'baseline',
-        gap: '2px',
-        flexShrink: 0,
-        minWidth: '38px',
-      }}>
-        {ticket.requirements.map((r, i) => (
-          <React.Fragment key={r.stack}>
-            {i > 0 && <span style={{ fontSize: '0.55rem', color: C.faint }}>+</span>}
-            <span style={{
-              fontSize: '0.6rem',
-              fontWeight: 700,
-              color: STACKS[r.stack].color,
-              letterSpacing: '0.03em',
-            }}>
-              {STACKS[r.stack].name}
-            </span>
-          </React.Fragment>
-        ))}
-      </span>
-
       {/* title */}
       <span style={{
         flex: 1,
@@ -2292,26 +2689,9 @@ function QueueRow({ ticket, active, disabled, pickable, onClick }) {
         {ticket.title}
       </span>
 
-      {/* threshold + indicators */}
-      <span style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
-        <span style={{ fontSize: '0.65rem', color: C.faint, fontVariantNumeric: 'tabular-nums' }}>
-          {ticket.requirements.map(r => `≥${r.threshold}`).join(isMulti ? '+' : '')}
-        </span>
-        {ticket.blocked && (
-          <span style={{
-            fontSize: '0.55rem',
-            color: C.danger,
-            padding: '1px 4px',
-            border: `1px solid ${C.danger}`,
-            borderRadius: '2px',
-            fontWeight: 700,
-            letterSpacing: '0.05em',
-          }}>
-            ✕{STACKS[ticket.blocked].name}
-          </span>
-        )}
-        {active && <span style={{ color: C.accent, fontWeight: 700, fontSize: '0.75rem' }}>●</span>}
-      </span>
+      {active && (
+        <span style={{ color: C.accent, fontWeight: 700, fontSize: '0.75rem', flexShrink: 0 }}>●</span>
+      )}
     </button>
   );
 }
@@ -2592,7 +2972,7 @@ function ClosedTicketCard({ ticket, result }) {
         )}
         {result.legendary && (
           <span style={{ color: C.legendary, fontWeight: 700, marginLeft: '6px' }}>
-            · ★ legendary by {result.legendaryAuthors.join(' + ')}
+            · legendary by {result.legendaryAuthors.join(' + ')}
           </span>
         )}
         {result.skipPenalty > 0 && (
@@ -2843,7 +3223,7 @@ function IntroScreen({ onStart }) {
         <MdLI><MdCode color={C.warning}>with &lt;stack&gt;</MdCode> — any other slot has that stack</MdLI>
       </MdUL>
 
-      <MdH2>★ legendary fixes</MdH2>
+      <MdH2>legendary fixes</MdH2>
       <MdP>
         Exactly <MdCode>2</MdCode> <MdB color={C.legendary}>legendary fixes</MdB> are seeded into the deck each shift — gold-tinted, attributed to a famous programmer (Linus Torvalds, Ada Lovelace, Grace Hopper, &amp; co). The terminal shows how many remain in the deck so you can plan around them.
       </MdP>
@@ -3062,20 +3442,6 @@ function TicketCard({ ticket, preview }) {
         )}
       </div>
 
-      {/* overall status */}
-      <div style={{ fontSize: '0.72rem', marginTop: '6px' }}>
-        <span style={{ color: C.faint }}>deploy status: </span>
-        {preview.tainted ? (
-          <span style={{ color: C.danger, fontWeight: 700 }}>BLOCKED — touches {blk?.name}</span>
-        ) : preview.allPassed ? (
-          <span style={{ color: C.success, fontWeight: 700 }}>READY · all requirements met</span>
-        ) : (
-          <span style={{ color: C.warning, fontWeight: 700 }}>
-            {preview.reqStatus.filter(r => !r.passed).length} of {preview.reqStatus.length} short
-          </span>
-        )}
-      </div>
-
       {/* combo chips */}
       {preview.combos.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '6px' }}>
@@ -3247,7 +3613,7 @@ function PushOutput({ result, ticket }) {
         <>
           <div style={{ height: '6px' }} />
           <TermLine color={C.legendary}>
-            ★ legendary fix · auto-pass by {result.legendaryAuthors.join(' + ')}
+            legendary fix · auto-pass by {result.legendaryAuthors.join(' + ')}
           </TermLine>
         </>
       )}
@@ -3265,13 +3631,18 @@ function PushOutput({ result, ticket }) {
         </>
       )}
 
-      {/* Per-requirement results */}
+      {/* Per-requirement results — each line breaks down every component that
+          fed the stack's effective score: per-card value (red if faulty, gold
+          if legendary), sequence bonus where it fired, and the combo bonus. */}
       {!result.tainted && result.reqStatus && (
         <>
           <div style={{ height: '6px' }} />
           <TermLine dim>requirement check:</TermLine>
           {result.reqStatus.map(r => {
             const s = STACKS[r.stack];
+            const onStack = (result.cards || [])
+              .map((c, i) => ({ c, cb: (result.cardBonuses && result.cardBonuses[i]) || null }))
+              .filter(({ c }) => c.stack === r.stack);
             return (
               <div key={r.stack} style={{
                 fontSize: '0.7rem',
@@ -3282,23 +3653,48 @@ function PushOutput({ result, ticket }) {
                 alignItems: 'baseline',
                 gap: '6px',
                 lineHeight: 1.55,
+                flexWrap: 'wrap',
               }}>
-                <span style={{ width: '10px', color: r.passed ? C.success : C.danger, fontWeight: 700 }}>
+                <span style={{ width: '10px', color: r.passed ? C.success : C.danger, fontWeight: 700, flexShrink: 0 }}>
                   {r.passed ? '✓' : '✗'}
                 </span>
-                <span style={{ color: s.color, fontWeight: 700, minWidth: '30px' }}>
+                <span style={{ color: s.color, fontWeight: 700, minWidth: '30px', flexShrink: 0 }}>
                   {s.name.toLowerCase()}
                 </span>
-                <span style={{ color: C.muted }}>
-                  {r.stackSum}
+                <span style={{ color: C.muted, minWidth: 0, wordBreak: 'break-word' }}>
+                  {onStack.length === 0 ? (
+                    <span style={{ color: C.faint, fontStyle: 'italic' }}>no cards invested</span>
+                  ) : (
+                    onStack.map(({ c, cb }, i) => {
+                      const v = effectiveValue(c);
+                      const bonusPts = cb && cb.fired ? cb.points : 0;
+                      const valColor = c.faulty ? C.danger : c.legendary ? C.legendary : C.text;
+                      return (
+                        <React.Fragment key={i}>
+                          {i > 0 && <span style={{ color: C.faint }}> + </span>}
+                          {bonusPts > 0 ? (
+                            <>
+                              <span style={{ color: C.faint }}>(</span>
+                              <span style={{ color: valColor, fontWeight: 600 }}>{v}</span>
+                              <span style={{ color: C.faint }}> + </span>
+                              <span style={{ color: C.warning, fontWeight: 600 }}>{bonusPts}★</span>
+                              <span style={{ color: C.faint }}>)</span>
+                            </>
+                          ) : (
+                            <span style={{ color: valColor, fontWeight: 600 }}>{v}</span>
+                          )}
+                        </React.Fragment>
+                      );
+                    })
+                  )}
                   {r.bonusApplied > 0 && (
                     <>
                       <span style={{ color: C.faint }}> + </span>
-                      <span style={{ color: C.success }}>{r.bonusApplied}</span>
-                      <span style={{ color: C.faint }}> = </span>
-                      {r.effective}
+                      <span style={{ color: C.success, fontWeight: 600 }}>combo {r.bonusApplied}</span>
                     </>
                   )}
+                  <span style={{ color: C.faint }}> = </span>
+                  <span style={{ color: r.passed ? C.success : C.warning, fontWeight: 700 }}>{r.effective}</span>
                   <span style={{ color: C.faint }}> / {r.threshold}</span>
                 </span>
               </div>

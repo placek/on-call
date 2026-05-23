@@ -57,7 +57,7 @@ Sequence bonus conditions:
 - `before <stack>` — next slot will have that stack
 - `with <stack>` — any other slot has that stack
 
-## ★ legendary fixes
+## legendary fixes
 
 Exactly `2` **legendary fixes** are seeded into the deck each shift — gold-tinted, attributed to a famous programmer (Linus Torvalds, Ada Lovelace, Grace Hopper, & co). The terminal shows how many remain in the deck so you can plan around them.
 
