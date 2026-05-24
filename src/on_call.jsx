@@ -1708,6 +1708,26 @@ function formatRunDate(iso) {
   }
 }
 
+// __BUILD_TIME__ is replaced at build time by Vite's `define` with an ISO
+// string of when the bundle was produced. Falls back to "dev" in cases where
+// the constant wasn't injected (shouldn't happen in practice).
+function formatDeployDate() {
+  try {
+    /* eslint-disable no-undef */
+    const iso = typeof __BUILD_TIME__ === 'string' ? __BUILD_TIME__ : null;
+    /* eslint-enable no-undef */
+    if (!iso) return 'dev';
+    const d = new Date(iso);
+    return d.toLocaleDateString(undefined, {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+  } catch {
+    return 'dev';
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  PO expectations
 //   ≥ 90% of previous velocity → happy
@@ -3147,7 +3167,9 @@ function IntroScreen({ onStart }) {
       }}>
         <span style={{ color: C.success }}>●</span>
         <span>README.md</span>
-        <span style={{ marginLeft: 'auto', color: C.faint }}>· main · last edited just now</span>
+        <span style={{ marginLeft: 'auto', color: C.faint }}>
+          · main · last deployed {formatDeployDate()}
+        </span>
       </div>
 
       <MdH1>on-call</MdH1>
