@@ -923,6 +923,13 @@ export default function OnCall() {
   const [deployed, setDeployed]           = useState([]);
   const [tickets, setTickets]             = useState([]);
   const [activeUid, setActiveUid]         = useState(null);
+  // Terminal load animation: each time a ticket becomes active, the three
+  // diagnostic commands type themselves into the terminal in sequence. loadStep
+  // tracks how far the sequence has progressed (0..2 = command N is typing,
+  // 3 = all done, panel is fully interactive). loadKey forces the typewriter
+  // effects to restart even when the same command string is reused.
+  const [loadStep, setLoadStep]           = useState(3);
+  const [loadKey, setLoadKey]             = useState(0);
   const [credits, setCredits]             = useState(0);
   const [strikes, setStrikes]             = useState(3);
   const [resolved, setResolved]           = useState(0);
@@ -982,6 +989,17 @@ export default function OnCall() {
     () => tickets.find(t => t.uid === activeUid) || null,
     [tickets, activeUid]
   );
+  // Re-trigger the typewriter sequence in the terminal whenever a different
+  // ticket becomes active during play (start of shift or pickup from the
+  // inbox). viewingClosedUid takes over the terminal with the closed-ticket
+  // view, so we skip animating in that case.
+  useEffect(() => {
+    if (activeUid && !viewingClosedUid && phase === 'playing') {
+      setLoadStep(0);
+      setLoadKey(k => k + 1);
+    }
+  }, [activeUid, viewingClosedUid, phase]);
+
   const viewingClosed = useMemo(
     () => closedTickets.find(c => c.ticket.uid === viewingClosedUid) || null,
     [closedTickets, viewingClosedUid]
@@ -1331,44 +1349,74 @@ export default function OnCall() {
               <ClosedView entry={viewingClosed} />
             ) : phase !== 'over' && (
               <>
+                {/* The terminal "boots" three diagnostic commands when a ticket
+                    loads: each line types itself in real time, then the
+                    corresponding output snaps in before the next command
+                    starts. loadStep drives the gating; loadKey forces a fresh
+                    typewriter run on every ticket switch. */}
                 <TerminalPrompt
                   command={`git tag -l 'fix-*-pending' | awk -F- '{print $2}' | uniq -c`}
                   comment="placements remaining per stack"
+                  typing={loadStep === 0}
+                  typingKey={loadKey}
+                  onTyped={() => setLoadStep(s => (s < 1 ? 1 : s))}
                 />
-                <StackPoolList usesRemaining={usesRemaining} legendaryRemaining={legendaryRemaining} />
+                {loadStep >= 1 && (
+                  <StackPoolList usesRemaining={usesRemaining} legendaryRemaining={legendaryRemaining} />
+                )}
 
-                <TerminalPrompt command="git log -4 fix-candidates --oneline" comment="tap to cherry-pick into deploy" />
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', padding: '0 10px 4px' }}>
-                  {STACK_KEYS.map(s => (
-                    <HandCard
-                      key={s}
-                      stack={s}
-                      card={hand[s]}
-                      blocked={ticket && s === ticket.blocked}
-                      deployFull={deployed.length >= 3}
-                      deployed={deployed}
-                      phase={phase}
-                      onClick={() => placeFromHand(s)}
-                    />
-                  ))}
-                </div>
-
-                <ScrollbackLine command={lastCommand} />
-
-                <TerminalPrompt command="git diff --staged HEAD~3..HEAD" comment={
-                  !ticket ? 'no ticket selected · pick one from the inbox' :
-                  deployed.length === 0 ? 'nothing staged' :
-                  deployed.length < 3 ? `${deployed.length}/3 staged · the 3rd pick auto-ships` :
-                  '3/3 staged'
-                } />
-                <div style={{ padding: '0 10px' }}>
-                  <DeployPackage
-                    deployed={deployed}
-                    preview={preview}
-                    blocked={ticket?.blocked}
-                    phase={phase}
+                {loadStep >= 1 && (
+                  <TerminalPrompt
+                    command="git log -4 fix-candidates --oneline"
+                    comment="tap to cherry-pick into deploy"
+                    typing={loadStep === 1}
+                    typingKey={loadKey}
+                    onTyped={() => setLoadStep(s => (s < 2 ? 2 : s))}
                   />
-                </div>
+                )}
+                {loadStep >= 2 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', padding: '0 10px 4px' }}>
+                    {STACK_KEYS.map(s => (
+                      <HandCard
+                        key={s}
+                        stack={s}
+                        card={hand[s]}
+                        blocked={ticket && s === ticket.blocked}
+                        deployFull={deployed.length >= 3}
+                        deployed={deployed}
+                        phase={phase}
+                        onClick={() => placeFromHand(s)}
+                      />
+                    ))}
+                  </div>
+                )}
+
+                {loadStep >= 2 && <ScrollbackLine command={lastCommand} />}
+
+                {loadStep >= 2 && (
+                  <TerminalPrompt
+                    command="git diff --staged HEAD~3..HEAD"
+                    comment={
+                      !ticket ? 'no ticket selected · pick one from the inbox' :
+                      deployed.length === 0 ? 'nothing staged' :
+                      deployed.length < 3 ? `${deployed.length}/3 staged · the 3rd pick auto-ships` :
+                      '3/3 staged'
+                    }
+                    typing={loadStep === 2}
+                    typingKey={loadKey}
+                    onTyped={() => setLoadStep(s => (s < 3 ? 3 : s))}
+                  />
+                )}
+                {loadStep >= 3 && (
+                  <div style={{ padding: '0 10px' }}>
+                    <DeployPackage
+                      deployed={deployed}
+                      preview={preview}
+                      blocked={ticket?.blocked}
+                      phase={phase}
+                    />
+                  </div>
+                )}
               </>
             )}
 
@@ -2445,13 +2493,42 @@ function Dot({ color }) {
 
 // Terminal-style line prompt: $ command
 // When an onClick is provided, the prompt becomes clickable and shows a hover box.
-function TerminalPrompt({ command, comment, tone, onClick, disabled }) {
+// When `typing` is true, the command appears char-by-char (~28ms/char) with a
+// blinking cursor; onTyped fires when the last character lands. The comment and
+// click affordances are suppressed until typing completes so the line really
+// behaves like a fresh shell command.
+function TerminalPrompt({ command, comment, tone, onClick, disabled, typing, typingKey, onTyped }) {
   const color =
     tone === 'danger'  ? C.danger  :
     tone === 'warning' ? C.warning :
     C.termPrompt;
-  const clickable = !!onClick && !disabled;
   const [hovered, setHovered] = useState(false);
+  const [typedLen, setTypedLen] = useState(typing ? 0 : command.length);
+
+  useEffect(() => {
+    if (!typing) {
+      setTypedLen(command.length);
+      return undefined;
+    }
+    setTypedLen(0);
+    let i = 0;
+    const id = setInterval(() => {
+      i += 1;
+      setTypedLen(i);
+      if (i >= command.length) {
+        clearInterval(id);
+        if (onTyped) onTyped();
+      }
+    }, 28);
+    return () => clearInterval(id);
+    // typingKey lets the caller force a restart when the same command needs to
+    // re-type on a new ticket load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [typing, typingKey, command]);
+
+  const isTyping = typing && typedLen < command.length;
+  const shownCommand = isTyping ? command.slice(0, typedLen) : command;
+  const clickable = !!onClick && !disabled && !isTyping;
   const showBox = clickable && hovered;
 
   const base = {
@@ -2486,9 +2563,21 @@ function TerminalPrompt({ command, comment, tone, onClick, disabled }) {
         overflowWrap: 'anywhere',
       }}>
         <span style={{ color, fontWeight: 700, marginRight: '6px' }}>$</span>
-        <span style={{ fontWeight: 600 }}>{command}</span>
+        <span style={{ fontWeight: 600 }}>{shownCommand}</span>
+        {isTyping && (
+          <span style={{
+            display: 'inline-block',
+            width: '0.5em',
+            marginLeft: '1px',
+            color: C.termText,
+            animation: 'pulse 0.9s ease-in-out infinite',
+            fontWeight: 700,
+          }}>
+            ▏
+          </span>
+        )}
       </div>
-      {comment && (
+      {comment && !isTyping && (
         <div style={{
           color: C.faint,
           fontStyle: 'italic',
