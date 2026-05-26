@@ -610,7 +610,7 @@ function HandCard({ stack, card, blocked, deployFull, deployed, phase, onClick }
   }
 
   const isLegendary = !!card.legendary;
-  const showBox = hovered || isLegendary;
+  const showBox = hovered;
   const borderColor = isLegendary ? C.legendary : (bonusFiresNow ? C.warning : C.borderHi);
   // Legendary fixes ignore blocked-stack warnings — they auto-pass anyway.
   const showBlockedHints = blocked && !isLegendary;
@@ -632,7 +632,7 @@ function HandCard({ stack, card, blocked, deployFull, deployed, phase, onClick }
         transition: 'background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease',
         textAlign: 'left',
         opacity: dimmed ? 0.45 : 1,
-        boxShadow: isLegendary
+        boxShadow: showBox && isLegendary
           ? '0 0 10px rgba(255, 209, 102, 0.22)'
           : showBox && bonusFiresNow
             ? '0 0 10px rgba(210, 153, 34, 0.18)'
