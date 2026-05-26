@@ -3,7 +3,7 @@ import { FIXES, TICKET_POOL, PROGRAMMERS, HOST_WORDS, HOST_TLDS, HOST_SPLITS } f
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  ON-CALL — a DevOps ticket triage game.
-//  Pick 3 fixes, ship a deploy, resolve the ticket. Don't get paged off.
+//  Pick 3 fixes, ship the stage, resolve the ticket. Don't get paged off.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -159,9 +159,9 @@ function projectKey(host) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Sequence bonuses — optional rules attached to fix cards.
-//  When a card's bonus condition is met by its position in the deploy package,
-//  the bonus points add to that card's stack contribution toward the ticket.
+//  Sequence bonuses — optional rules attached to fixes.
+//  When a fix's bonus condition is met by its position in the stage,
+//  the bonus points add to that fix's stack contribution toward the ticket.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function bonusFires(bonus, idx, deployed) {
@@ -188,14 +188,14 @@ function bonusLabel(bonus) {
   }
 }
 
-// "Would this bonus fire if I placed this card right now?"
-// Used to highlight hand cards whose bonus is ripe for the picking.
+// "Would this bonus fire if I placed this fix right now?"
+// Used to highlight fix candidates whose bonus is ripe for the picking.
 function bonusWouldFireIfPlacedNow(bonus, deployed) {
   if (!bonus) return false;
   const futureIdx = deployed.length;
   switch (bonus.kind) {
     case 'first':  return futureIdx === 0;
-    case 'last':   return futureIdx === 2; // will complete the deploy
+    case 'last':   return futureIdx === 2; // will complete the stage
     case 'after':  return futureIdx > 0 && deployed[futureIdx - 1].stack === bonus.dep;
     case 'before': return false; // can't know yet; depends on what's placed AFTER
     case 'with':   return deployed.some(c => c.stack === bonus.dep);
@@ -204,7 +204,7 @@ function bonusWouldFireIfPlacedNow(bonus, deployed) {
 }
 
 function rollBonus(stack) {
-  // ~50% of cards have no bonus
+  // ~50% of fixes have no bonus
   if (Math.random() < 0.5) return null;
   const points = 2;
   const others = STACK_KEYS.filter(s => s !== stack);
@@ -228,7 +228,7 @@ let _cardUid = 0;
 // Fixed per-shift quotas — guarantees the same risk/reward shape every game.
 // Total pool slots = STACK_KEYS.length × STACK_POOL_SIZE = 4 × 10 = 40.
 //   FAULTY_PER_SHIFT = 6  → 15% of draws are bugged (was random 18%)
-//   LEGENDARY_PER_SHIFT = 2 → guaranteed two rescue cards per shift
+//   LEGENDARY_PER_SHIFT = 2 → guaranteed two rescue fixes per shift
 // Slot positions are randomized inside buildShiftDecks() so each game still
 // feels different, but the *budget* is constant.
 const FAULTY_PER_SHIFT = 6;
@@ -242,10 +242,10 @@ function shuffle(arr) {
   return arr;
 }
 
-// Build the full 40-card shift deck, bucketed by stack. Allocates the
+// Build the full 40-fix shift deck, bucketed by stack. Allocates the
 // faulty/legendary quotas across slots first, then materializes each slot
-// into a card (value, description variant, sequence bonus, author rolled
-// per-card).
+// into a fix (value, description variant, sequence bonus, author rolled
+// per-fix).
 function buildShiftDecks() {
   const slots = [];
   STACK_KEYS.forEach(s => {
@@ -294,7 +294,7 @@ function materializeCard(stack, faulty, legendary) {
 
   const value = 1 + Math.floor(Math.random() * 13);
   const fix = _pick(FIXES[stack][value - 1]);
-  // Soft tell: faulty cards are prefixed with `patch:` instead of the natural
+  // Soft tell: faulty fixes are prefixed with `patch:` instead of the natural
   // description — subtle enough to require attention, learnable over a few games.
   const description = faulty ? `patch: ${fix.description.toLowerCase()}` : fix.description;
   return {
@@ -309,7 +309,7 @@ function materializeCard(stack, faulty, legendary) {
   };
 }
 
-// Effective scoring value of a card.
+// Effective scoring value of a fix.
 // Faulty fixes contribute -floor(value/2) instead of +value.
 // Legendary fixes contribute 0 — their power is the auto-pass, not points.
 // Bonuses (when their condition fires) still add positively — they're independent of faultiness.
@@ -416,7 +416,7 @@ function skipPenaltyFor(activeTicket, remaining) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Combos — sequence bonuses added to the required-stack score on a deploy
+//  Combos — sequence bonuses added to the required-stack score on a stage
 // ─────────────────────────────────────────────────────────────────────────────
 
 const COMBO_DEFS = [
@@ -450,7 +450,7 @@ const COMBO_DEFS = [
     key: 'cover',
     name: 'MULTI_COVER',
     bonus: 4,
-    desc: 'A card invested in every required stack',
+    desc: 'A fix invested in every required stack',
     test: (cards, ticket) => {
       if (ticket.requirements.length < 2) return false;
       const stacksUsed = new Set(cards.map(c => c.stack));
@@ -468,24 +468,24 @@ const COMBO_DEFS = [
 
 function detectCombos(cards, ticket) {
   if (cards.length !== 3) return [];
-  // A legendary in the deploy short-circuits scoring; suppress combos so the
+  // A legendary in the stage short-circuits scoring; suppress combos so the
   // (value === 0) trio doesn't accidentally trigger VERSION_MATCH etc.
   if (cards.some(c => c.legendary)) return [];
   return COMBO_DEFS.filter(combo => combo.test(cards, ticket));
 }
 
-// Evaluate a deploy against a ticket with one or more requirements.
+// Evaluate a stage against a ticket with one or more requirements.
 //
-// Per-card scoring: each card contributes its value + (sequence bonus if fired)
+// Per-fix scoring: each fix contributes its value + (sequence bonus if fired)
 // to its own stack's tally.
 //
 // Per-requirement rules:
-//   - stackSum = sum of card values + fired bonus points for cards on that stack
+//   - stackSum = sum of fix values + fired bonus points for fixes on that stack
 //   - combo bonus is added per-requirement, but ONLY if the requirement has
-//     at least one card invested (prevents "free passes" on unplayed stacks)
+//     at least one fix invested (prevents "free passes" on unplayed stacks)
 //   - the requirement passes iff effectiveScore >= threshold
 //
-// Overall success = ALL requirements pass AND no blocked-stack card played.
+// Overall success = ALL requirements pass AND no blocked-stack fix played.
 // Reward score = sum of stack sums + comboBonus.
 function scoreDeploy(cards, ticket) {
   const perStack = {};
@@ -495,7 +495,7 @@ function scoreDeploy(cards, ticket) {
     stackCardCount[r.stack] = 0;
   });
 
-  // Per-card bonus fired states (also returned for UI display)
+  // Per-fix bonus fired states (also returned for UI display)
   const cardBonuses = cards.map((c, idx) => ({
     fired: bonusFires(c.bonus, idx, cards),
     bonus: c.bonus,
@@ -514,8 +514,8 @@ function scoreDeploy(cards, ticket) {
 
   const reqStatus = ticket.requirements.map(r => {
     const stackSum = perStack[r.stack] || 0;
-    // "Invested" = at least one card placed on this stack.
-    // Using card count (not stackSum > 0) — a faulty card with negative contribution
+    // "Invested" = at least one fix placed on this stack.
+    // Using fix count (not stackSum > 0) — a faulty fix with negative contribution
     // still counts as investment, so combo bonuses can apply.
     const invested = (stackCardCount[r.stack] || 0) > 0;
     const bonusApplied = invested ? comboBonus : 0;
@@ -532,9 +532,9 @@ function scoreDeploy(cards, ticket) {
 
   const baseScore = Object.values(perStack).reduce((a, b) => a + b, 0);
 
-  // Legendary auto-pass: a single legendary card in the 3-card deploy
+  // Legendary auto-pass: a single legendary fix in the 3-fix stage
   // forces every requirement to pass and ignores the blocked-stack taint.
-  // Velocity still comes from the non-legendary cards' values (legendaries
+  // Velocity still comes from the non-legendary fixes' values (legendaries
   // contribute 0). Mark the result so the UI can surface the override.
   const hasLegendary = cards.some(c => c.legendary);
   const legendaryAuthors = cards.filter(c => c.legendary).map(c => c.author);
@@ -564,12 +564,12 @@ function scoreDeploy(cards, ticket) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Fix card
+//  Fix
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Hand card — shown in the hand area, one per stack.
-//  Tapping places it into the next deploy slot.
+//  Fix candidate — shown in the fix-candidates area, one per stack.
+//  Tapping stages it into the next slot.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function HandCard({ stack, card, blocked, deployFull, deployed, phase, onClick }) {
@@ -612,7 +612,7 @@ function HandCard({ stack, card, blocked, deployFull, deployed, phase, onClick }
   const isLegendary = !!card.legendary;
   const showBox = hovered || isLegendary;
   const borderColor = isLegendary ? C.legendary : (bonusFiresNow ? C.warning : C.borderHi);
-  // Legendary cards ignore blocked-stack warnings — they auto-pass anyway.
+  // Legendary fixes ignore blocked-stack warnings — they auto-pass anyway.
   const showBlockedHints = blocked && !isLegendary;
 
   return (
@@ -753,7 +753,7 @@ function HandCard({ stack, card, blocked, deployFull, deployed, phase, onClick }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Deploy package — read-only display of cherry-picked fixes (final, no revert)
+//  Stage — read-only display of cherry-picked fixes (final, no revert)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function DeployPackage({ deployed, preview, blocked }) {
@@ -913,13 +913,13 @@ function DeployPackage({ deployed, preview, blocked }) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function OnCall() {
-  // Per-stack draw pool — cards waiting behind the one currently in hand.
+  // Per-stack draw pool — fixes waiting behind the one currently in candidates.
   // Built once at startShift() with fixed faulty/legendary quotas; sliced as
-  // cards are played. `usesRemaining` below is derived from this + hand.
+  // fixes are played. `usesRemaining` below is derived from this + candidates.
   const [pool, setPool]                   = useState({});
-  // Hand: one card per stack (preview of what would be placed next from that stack)
+  // Fix candidates: one fix per stack (preview of what would be staged next from that stack)
   const [hand, setHand]                   = useState({});
-  // Deploy package: ordered array of placed cards, max 3
+  // Stage: ordered array of staged fixes, max 3
   const [deployed, setDeployed]           = useState([]);
   const [tickets, setTickets]             = useState([]);
   const [activeUid, setActiveUid]         = useState(null);
@@ -936,7 +936,7 @@ export default function OnCall() {
   // Anti-snowball: armed when the player drops to 1 strike on a rejection;
   // disarmed after softening the very next rolled ticket.
   const [mercyArmed, setMercyArmed]       = useState(false);
-  // Phases: 'intro' | 'playing' | 'over'. Deploys auto-fire on the 3rd
+  // Phases: 'intro' | 'playing' | 'over'. Stages auto-ship on the 3rd
   // placement, so there's no separate 'result' phase — the just-finished
   // ticket lives in `closedTickets` and is surfaced via `viewingClosedUid`.
   const [phase, setPhase]                 = useState('intro');
@@ -1015,9 +1015,9 @@ export default function OnCall() {
     [closedTickets, viewingClosedUid]
   );
 
-  // Per-stack "draws still possible" count: the card currently in hand plus
-  // every card still queued in the pool. Drives the StackPoolList readout
-  // and the deploy-impossible shift-end check.
+  // Per-stack "draws still possible" count: the candidate currently shown plus
+  // every fix still queued in the pool. Drives the StackPoolList readout
+  // and the stage-impossible shift-end check.
   const usesRemaining = useMemo(() => {
     const out = {};
     STACK_KEYS.forEach(s => {
@@ -1026,7 +1026,7 @@ export default function OnCall() {
     return out;
   }, [hand, pool]);
 
-  // Visible count of legendaries still in the player's deck (hand + pool).
+  // Visible count of legendaries still in the player's deck (candidates + pool).
   const legendaryRemaining = useMemo(() => {
     let n = 0;
     STACK_KEYS.forEach(s => {
@@ -1080,8 +1080,8 @@ export default function OnCall() {
     setActiveUid(uid);
   }
 
-  // Place the hand card from stack S into the deploy package.
-  // On the 3rd placement the deploy fires automatically: the ticket gets
+  // Stage the candidate from stack S.
+  // On the 3rd placement the stage ships automatically: the ticket gets
   // scored, archived to the DONE list, removed from the inbox, and a fresh
   // ticket is drawn. The player stays parked on the just-finished ticket
   // (viewingClosedUid) until they pick a new inbox ticket or click another
@@ -1095,7 +1095,7 @@ export default function OnCall() {
     if (!card) return;
 
     const newDeployed = [...deployed, card];
-    // Pop the next pool card into hand; null if the pool for this stack is dry.
+    // Pop the next pool fix into candidates; null if the pool for this stack is dry.
     const newPoolForStack = pool[stack] || [];
     const nextCard = newPoolForStack[0] || null;
     const newPool = { ...pool, [stack]: newPoolForStack.slice(1) };
@@ -1113,7 +1113,7 @@ export default function OnCall() {
       return;
     }
 
-    // Auto-deploy on the third placement.
+    // Auto-ship on the third placement.
     const deployedCards = newDeployed.map(c => ({ ...c }));
     const score = scoreDeploy(newDeployed, ticket);
     const success = !score.tainted && score.allPassed;
@@ -1152,7 +1152,7 @@ export default function OnCall() {
     const newCredits      = (success ? credits + result.earned : credits) - skipScaled.total;
     const nextResolved    = resolved + (success ? 1 : 0);
     // Game ends on 3 rejections, or when the player can't field another
-    // 3-card deploy out of the remaining fix pool.
+    // 3-fix stage out of the remaining fix pool.
     const remainingFixes  = STACK_KEYS.reduce(
       (sum, s) => sum + (newHand[s] ? 1 : 0) + (newPool[s]?.length || 0),
       0
@@ -1207,7 +1207,7 @@ export default function OnCall() {
       return { perStack: {}, reqStatus, baseScore: 0, combos: [], comboBonus: 0, cardBonuses: [], total: 0, tainted: false, allPassed: false, partial: true };
     }
     if (deployed.length < 3) {
-      // Partial: per-card bonuses can fire (e.g. "first", "after X") even with <3 cards
+      // Partial: per-fix bonuses can fire (e.g. "first", "after X") even with <3 fixes
       const perStack = {};
       ticket.requirements.forEach(r => { perStack[r.stack] = 0; });
       const cardBonuses = deployed.map((c, idx) => ({
@@ -1253,8 +1253,8 @@ export default function OnCall() {
         body: (
           <>
             <p style={{ margin: '0 0 8px' }}>
-              You're on call. Tickets land in your inbox, you cherry-pick fixes
-              from your hand, and the third pick auto-ships a deploy.
+              You're on call. Tickets land in your inbox, you cherry-pick from
+              your fix candidates, and the third pick auto-ships the stage.
             </p>
             <p style={{ margin: 0, color: C.faint, fontStyle: 'italic' }}>
               This walkthrough takes about a minute. Press <b>esc</b> or hit
@@ -1291,17 +1291,17 @@ export default function OnCall() {
               <b style={{ color: primaryStack ? primaryStack.color : C.text }}>
                 {reqDesc}
               </b>{' '}
-              in deploy score.
+              in stage score.
             </p>
             <p style={{ margin: '0 0 8px' }}>
-              Each card you cherry-pick contributes its <b>value</b> (1–13) to
+              Each fix you cherry-pick contributes its <b>value</b> (1–13) to
               its own stack. Hit the threshold on every requirement and the
-              deploy succeeds — paying <b style={{ color: C.success }}>{multStr}</b> velocity.
+              stage succeeds — paying <b style={{ color: C.success }}>{multStr}</b> velocity.
             </p>
             {blockedName ? (
               <p style={{ margin: 0, color: C.danger }}>
-                ✕ Don't play any <b>{blockedName}</b> cards — that stack is
-                blocked. Touching it taints the whole deploy.
+                ✕ Don't play any <b>{blockedName}</b> fixes — that stack is
+                blocked. Touching it taints the whole stage.
               </p>
             ) : (
               <p style={{ margin: 0, color: C.faint, fontStyle: 'italic' }}>
@@ -1312,7 +1312,7 @@ export default function OnCall() {
         ) : (
           <p style={{ margin: 0 }}>
             The ticket you're currently solving shows its requirements, blocked
-            stack, and a live preview of where your deploy stands.
+            stack, and a live preview of where your stage stands.
           </p>
         ),
       },
@@ -1351,19 +1351,19 @@ export default function OnCall() {
         body: (
           <>
             <p style={{ margin: '0 0 8px' }}>
-              Your <b>hand</b>: one candidate per stack. Each shows its
+              Your <b>fix candidates</b>: one per stack. Each shows its
               short SHA, stack, value, and a one-line summary.
             </p>
             <p style={{ margin: '0 0 8px' }}>
               <b style={{ color: C.warning }}>★ sequence bonus</b> means
               extra points if the placement condition fires (first, after DB,
-              etc.). Watch for cards whose description starts with{' '}
+              etc.). Watch for fixes whose description starts with{' '}
               <code style={{ color: C.danger }}>patch:</code> — that's the soft
               tell for a <b style={{ color: C.danger }}>bugged</b> fix that
               scores negative.
             </p>
             <p style={{ margin: 0, color: C.faint }}>
-              Tap a card to cherry-pick it into the deploy.
+              Tap a fix to cherry-pick it into the stage.
             </p>
           </>
         ),
@@ -1373,10 +1373,10 @@ export default function OnCall() {
         ref: gitDiffRef,
         body: (
           <p style={{ margin: 0 }}>
-            Your staged deploy package, in order. The <b style={{ color: C.success }}>3rd pick auto-ships</b> —
-            it scores against every requirement, ships the deploy, and either
+            Your stage, in order. The <b style={{ color: C.success }}>3rd pick auto-ships</b> —
+            it scores against every requirement, ships the stage, and either
             resolves the ticket or burns a strike. Cherry-picks are <b>final</b>:
-            no revert once a card lands here.
+            no revert once a fix lands here.
           </p>
         ),
       },
@@ -1399,7 +1399,7 @@ export default function OnCall() {
                   <b style={{ color: STACKS[r.stack].color }}>{STACKS[r.stack].name}</b>
                 </React.Fragment>
               ))}{' '}
-              cards from your hand, skip anything prefixed{' '}
+              fixes from your candidates, skip anything prefixed{' '}
               <code style={{ color: C.danger }}>patch:</code>
               {blockedName ? <> and never any <b style={{ color: C.danger }}>{blockedName}</b></> : null}, and
               try to land a sequence bonus on the way.
@@ -1466,7 +1466,7 @@ export default function OnCall() {
                       ticket={t}
                       active={t.uid === activeUid}
                       disabled={phase === 'over'}
-                      // After auto-deploy the player is parked on the just-
+                      // After auto-ship the player is parked on the just-
                       // finished ticket (no active). The inbox rows are how
                       // they pick the next task — light them up to invite.
                       pickable={phase === 'playing' && !activeUid}
@@ -1571,7 +1571,7 @@ export default function OnCall() {
                   <div ref={gitLogRef}>
                     <TerminalPrompt
                       command="git log -4 fix-candidates --oneline"
-                      comment="tap to cherry-pick into deploy"
+                      comment="tap to cherry-pick into stage"
                       typing={loadStep === 1}
                       typingKey={loadKey}
                       onTyped={() => setLoadStep(s => (s < 2 ? 2 : s))}
@@ -3102,7 +3102,7 @@ function ClosedRow({ ticket, result, viewing, onClick }) {
 }
 
 // ── Read-only terminal view of a closed ticket: just the git commit
-// section (the push output of that deploy).
+// section (the push output of that stage).
 function ClosedView({ entry }) {
   const { ticket, result } = entry;
   return (
@@ -3117,7 +3117,7 @@ function ClosedView({ entry }) {
   );
 }
 
-// ── Closed ticket detail card, rendered in the main triage panel when a
+// ── Closed ticket detail panel, rendered in the main triage panel when a
 // done ticket is being viewed. Mirrors TicketCard but shows the final
 // outcome (resolved / rejected) instead of an in-progress preview.
 function ClosedTicketCard({ ticket, result }) {
@@ -3531,7 +3531,7 @@ function Tutorial({ steps, onClose }) {
         }} />
       )}
 
-      {/* tooltip card */}
+      {/* tooltip panel */}
       <div style={{
         position: 'fixed',
         top: isModal ? '50%' : ttTop,
@@ -3687,7 +3687,7 @@ function IntroScreen({ onStart }) {
       <MdH1>on-call</MdH1>
 
       <MdNote>
-        <MdB>A solo card game about DevOps triage.</MdB> Tickets land in your inbox. Cherry-pick fixes from your hand. Ship before the pager fires.{' '}
+        <MdB>A solo game about DevOps triage.</MdB> Tickets land in your inbox. Cherry-pick from your fix candidates. Ship before the pager fires.{' '}
         <span style={{ color: C.faint, fontStyle: 'italic' }}>
           So you can keep doing DevOps after you've finished doing DevOps — because clearly one shift a day wasn't enough.
         </span>
@@ -3696,9 +3696,9 @@ function IntroScreen({ onStart }) {
       <MdH2>quick start</MdH2>
       <MdOL>
         <MdLI>Pick a ticket from the <MdB color={C.accent}>inbox</MdB> — each demands one or two stack thresholds (e.g. <MdCode color={STACKS.db.color}>db ≥ 7</MdCode> or <MdCode color={STACKS.db.color}>db ≥ 5</MdCode> <span style={{ color: C.faint }}>+</span> <MdCode color={STACKS.api.color}>api ≥ 5</MdCode>).</MdLI>
-        <MdLI>Read your candidate fixes — they appear as <MdCode>git log -4 fix-candidates --oneline</MdCode>, one per stack.</MdLI>
-        <MdLI>Tap a candidate to <MdB color={C.success}>cherry-pick</MdB> it into the deploy. The <MdB color={C.success}>3rd pick auto-ships</MdB> — every requirement must clear its threshold.</MdLI>
-        <MdLI>Successful deploys earn <MdB color={C.success}>velocity</MdB>. Failed deploys cost a strike. <MdB color={C.danger}>3 strikes → paged off-call.</MdB></MdLI>
+        <MdLI>Read your fix candidates — they appear as <MdCode>git log -4 fix-candidates --oneline</MdCode>, one per stack.</MdLI>
+        <MdLI>Tap a candidate to <MdB color={C.success}>cherry-pick</MdB> it into the stage. The <MdB color={C.success}>3rd pick auto-ships</MdB> — every requirement must clear its threshold.</MdLI>
+        <MdLI>Successful stages earn <MdB color={C.success}>velocity</MdB>. Failed stages cost a strike. <MdB color={C.danger}>3 strikes → paged off-call.</MdB></MdLI>
         <MdLI>Shift ends on the third strike, or when fewer than 3 fixes remain in the pool.</MdLI>
       </MdOL>
 
@@ -3706,8 +3706,8 @@ function IntroScreen({ onStart }) {
       <MdUL>
         <MdLI><MdB color={C.accent}>INBOX</MdB> — up to {QUEUE_SIZE} open tickets at a time. A new one rolls in after each resolution.</MdLI>
         <MdLI><MdB color={C.accent}>ACTIVE TICKET</MdB> — the one you're currently solving. Shows requirements, blocked stack, and live preview.</MdLI>
-        <MdLI><MdB color={C.accent}>HAND</MdB> — one candidate fix per stack, refilled from each stack's pool of {STACK_POOL_SIZE}.</MdLI>
-        <MdLI><MdB color={C.accent}>DEPLOY</MdB> — the staged cherry-picks. Auto-ships at 3.</MdLI>
+        <MdLI><MdB color={C.accent}>FIX CANDIDATES</MdB> — one per stack, refilled from each stack's pool of {STACK_POOL_SIZE}.</MdLI>
+        <MdLI><MdB color={C.accent}>STAGE</MdB> — the staged cherry-picks. Auto-ships at 3.</MdLI>
         <MdLI><MdB color={C.accent}>DONE</MdB> — closed tickets. Click any to inspect its diff and outcome.</MdLI>
       </MdUL>
 
@@ -3725,8 +3725,8 @@ function IntroScreen({ onStart }) {
       <MdH2>tickets</MdH2>
       <MdUL>
         <MdLI><MdB>Requirements:</MdB> single-stack (must beat one threshold) or dual-stack (both must beat their own threshold independently).</MdLI>
-        <MdLI><MdB color={C.danger}>Blocked stack:</MdB> some tickets ban one stack. Touching it taints the entire deploy — automatic rejection.</MdLI>
-        <MdLI><MdB>Reward multiplier:</MdB> tier-based (<MdCode>×2</MdCode> easy, <MdCode>×4</MdCode> medium, <MdCode>×6</MdCode> incident). Final velocity = deploy score × multiplier.</MdLI>
+        <MdLI><MdB color={C.danger}>Blocked stack:</MdB> some tickets ban one stack. Touching it taints the entire stage — automatic rejection.</MdLI>
+        <MdLI><MdB>Reward multiplier:</MdB> tier-based (<MdCode>×2</MdCode> easy, <MdCode>×4</MdCode> medium, <MdCode>×6</MdCode> incident). Final velocity = stage score × multiplier.</MdLI>
         <MdLI>Tickets get harder as your <MdCode>resolved</MdCode> count climbs — more dual-stack, more incidents, creeping thresholds.</MdLI>
       </MdUL>
 
@@ -3740,12 +3740,12 @@ function IntroScreen({ onStart }) {
         <MdLI>Skip a <MdCode color={C.warning}>prio-2</MdCode> to close a <MdCode>prio-3</MdCode> (×2) → <MdCode color={C.danger}>−8</MdCode></MdLI>
       </MdUL>
 
-      <MdH2>fix cards</MdH2>
+      <MdH2>fixes</MdH2>
       <MdUL>
-        <MdLI><MdB>Value:</MdB> <MdCode>1</MdCode>–<MdCode>13</MdCode> effort points contributed to the card's stack.</MdLI>
-        <MdLI><MdB color={C.warning}>★ sequence bonus</MdB> (~half of cards): extra points if the placement condition is met. The hand highlights amber with <MdCode color={C.success}>✓ ready</MdCode> when it would fire on the next pick.</MdLI>
-        <MdLI><MdB color={C.danger}>Bugged:</MdB> exactly <MdCode>6</MdCode> per shift (~15% of draws) — scored as <MdCode color={C.danger}>−⌊value/2⌋</MdCode> after placement. Look for the <MdCode color={C.danger}>patch:</MdCode> prefix in the description — it's the soft tell. Bonuses still fire on bugged cards.</MdLI>
-        <MdLI><MdB color={C.danger}>Cherry-picks are final</MdB> — no revert once a card lands in the deploy.</MdLI>
+        <MdLI><MdB>Value:</MdB> <MdCode>1</MdCode>–<MdCode>13</MdCode> effort points contributed to the fix's stack.</MdLI>
+        <MdLI><MdB color={C.warning}>★ sequence bonus</MdB> (~half of fixes): extra points if the placement condition is met. The fix candidates highlight amber with <MdCode color={C.success}>✓ ready</MdCode> when it would fire on the next pick.</MdLI>
+        <MdLI><MdB color={C.danger}>Bugged:</MdB> exactly <MdCode>6</MdCode> per shift (~15% of draws) — scored as <MdCode color={C.danger}>−⌊value/2⌋</MdCode> after placement. Look for the <MdCode color={C.danger}>patch:</MdCode> prefix in the description — it's the soft tell. Bonuses still fire on bugged fixes.</MdLI>
+        <MdLI><MdB color={C.danger}>Cherry-picks are final</MdB> — no revert once a fix lands in the stage.</MdLI>
       </MdUL>
 
       <MdP>Sequence bonus conditions:</MdP>
@@ -3762,9 +3762,9 @@ function IntroScreen({ onStart }) {
         Exactly <MdCode>2</MdCode> <MdB color={C.legendary}>legendary fixes</MdB> are seeded into the deck each shift — gold-tinted, attributed to a famous programmer (Linus Torvalds, Ada Lovelace, Grace Hopper, &amp; co). The terminal shows how many remain in the deck so you can plan around them.
       </MdP>
       <MdUL>
-        <MdLI>One legendary in your 3-card deploy <MdB color={C.success}>auto-passes</MdB> every requirement and ignores the blocked stack.</MdLI>
-        <MdLI>The card itself contributes <MdCode>0</MdCode> velocity — only the other two normal cards in the deploy add points.</MdLI>
-        <MdLI>Never bugged. Never carries a sequence bonus. Combos are suppressed when a legendary is in the deploy.</MdLI>
+        <MdLI>One legendary in your 3-fix stage <MdB color={C.success}>auto-passes</MdB> every requirement and ignores the blocked stack.</MdLI>
+        <MdLI>The fix itself contributes <MdCode>0</MdCode> velocity — only the other two normal fixes in the stage add points.</MdLI>
+        <MdLI>Never bugged. Never carries a sequence bonus. Combos are suppressed when a legendary is in the stage.</MdLI>
         <MdLI>Skip penalty still applies — they rescue a ticket but don't rewrite which ticket you chose.</MdLI>
       </MdUL>
       <MdP>
@@ -3779,7 +3779,7 @@ function IntroScreen({ onStart }) {
       </MdP>
 
       <MdH2>combo bonuses</MdH2>
-      <MdP>Detected on the full 3-card deploy. They stack with sequence bonuses and the multiplier:</MdP>
+      <MdP>Detected on the full 3-fix stage. They stack with sequence bonuses and the multiplier:</MdP>
       <MdUL>
         {COMBO_DEFS.map(c => (
           <MdLI key={c.key}>
@@ -3793,8 +3793,8 @@ function IntroScreen({ onStart }) {
       <MdH2>scoring</MdH2>
       <MdUL>
         <MdLI>Each requirement passes iff <MdCode>stack sum + sequence bonuses + applicable combo ≥ threshold</MdCode>.</MdLI>
-        <MdLI>A combo bonus only counts toward a requirement that has at least one card invested.</MdLI>
-        <MdLI>Deploy succeeds iff every requirement passes <MdB>and</MdB> no blocked-stack card was played.</MdLI>
+        <MdLI>A combo bonus only counts toward a requirement that has at least one fix invested.</MdLI>
+        <MdLI>Stage succeeds iff every requirement passes <MdB>and</MdB> no blocked-stack fix was played.</MdLI>
         <MdLI>On success: <MdCode color={C.success}>+velocity = total score × ticket multiplier</MdCode>. Then subtract any skip penalty.</MdLI>
         <MdLI>On failure: no velocity, lose a strike, skip penalty still applies.</MdLI>
       </MdUL>
@@ -4031,7 +4031,7 @@ function PushOutput({ result, ticket }) {
       <TermLine color={ok ? C.success : C.danger}>
         {ok
           ? `   * [new commit] ${result.sha} -> main`
-          : `   ! [rejected]   ${result.sha} -> main (deploy failed)`}
+          : `   ! [rejected]   ${result.sha} -> main (stage failed)`}
       </TermLine>
 
       {/* Spacer */}
@@ -4045,12 +4045,12 @@ function PushOutput({ result, ticket }) {
 
       <div style={{ height: '6px' }} />
 
-      {/* Diff lines for each deployed card */}
+      {/* Diff lines for each staged fix */}
       {cards.map((c, i) => {
         const s = STACKS[c.stack];
         const isLegendary = !!c.legendary;
         const counted = requiredStacks.has(c.stack);
-        // Legendary cards bypass blocked-stack taint entirely.
+        // Legendary fixes bypass blocked-stack taint entirely.
         const blocked = !isLegendary && ticket.blocked && c.stack === ticket.blocked;
         const cb = result.cardBonuses && result.cardBonuses[i];
         const fired = cb && cb.fired;
@@ -4166,7 +4166,7 @@ function PushOutput({ result, ticket }) {
       )}
 
       {/* Per-requirement results — each line breaks down every component that
-          fed the stack's effective score: per-card value (red if faulty, gold
+          fed the stack's effective score: per-fix value (red if faulty, gold
           if legendary), sequence bonus where it fired, and the combo bonus. */}
       {!result.tainted && result.reqStatus && (
         <>
@@ -4197,7 +4197,7 @@ function PushOutput({ result, ticket }) {
                 </span>
                 <span style={{ color: C.muted, minWidth: 0, wordBreak: 'break-word' }}>
                   {onStack.length === 0 ? (
-                    <span style={{ color: C.faint, fontStyle: 'italic' }}>no cards invested</span>
+                    <span style={{ color: C.faint, fontStyle: 'italic' }}>no fixes invested</span>
                   ) : (
                     onStack.map(({ c, cb }, i) => {
                       const v = effectiveValue(c);
@@ -4288,7 +4288,7 @@ function ShiftSummary({ credits, resolved, rejected, reason }) {
     <div style={{ padding: '0 0 6px', fontFamily: "'JetBrains Mono', monospace" }}>
       <TermLine color={paged ? C.danger : C.accent}>
         {paged
-          ? '× paged off-call — three failed deploys'
+          ? '× paged off-call — three failed stages'
           : '◆ shift complete — fix pool depleted'}
       </TermLine>
       <TermLine dim>
