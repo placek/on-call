@@ -572,7 +572,7 @@ function scoreDeploy(cards, ticket) {
 //  Tapping stages it into the next slot.
 // ─────────────────────────────────────────────────────────────────────────────
 
-function HandCard({ stack, card, blocked, deployFull, deployed, phase, onClick }) {
+function HandCard({ stack, card, remaining, blocked, deployFull, deployed, phase, onClick }) {
   const s = STACKS[stack];
   const isEmpty = !card;
   const bonusFiresNow = card && card.bonus && bonusWouldFireIfPlacedNow(card.bonus, deployed);
@@ -683,8 +683,14 @@ function HandCard({ stack, card, blocked, deployFull, deployed, phase, onClick }
           fontWeight: 700,
           minWidth: '26px',
           letterSpacing: '0.03em',
+          whiteSpace: 'nowrap',
         }}>
-          {isLegendary ? '★' : s.name}
+          {isLegendary ? '★' : (
+            <>
+              {s.name}
+              <span style={{ color: C.faint, fontWeight: 400 }}>-{remaining}</span>
+            </>
+          )}
         </div>
         <div style={{
           fontSize: '0.78rem', fontWeight: 700,
@@ -923,12 +929,12 @@ export default function OnCall() {
   const [deployed, setDeployed]           = useState([]);
   const [tickets, setTickets]             = useState([]);
   const [activeUid, setActiveUid]         = useState(null);
-  // Terminal load animation: each time a ticket becomes active, the three
+  // Terminal load animation: each time a ticket becomes active, the two
   // diagnostic commands type themselves into the terminal in sequence. loadStep
-  // tracks how far the sequence has progressed (0..2 = command N is typing,
-  // 3 = all done, panel is fully interactive). loadKey forces the typewriter
+  // tracks how far the sequence has progressed (0..1 = command N is typing,
+  // 2 = all done, panel is fully interactive). loadKey forces the typewriter
   // effects to restart even when the same command string is reused.
-  const [loadStep, setLoadStep]           = useState(3);
+  const [loadStep, setLoadStep]           = useState(2);
   const [loadKey, setLoadKey]             = useState(0);
   const [credits, setCredits]             = useState(0);
   const [strikes, setStrikes]             = useState(3);
@@ -940,8 +946,9 @@ export default function OnCall() {
   // placement, so there's no separate 'result' phase — the just-finished
   // ticket lives in `closedTickets` and is surfaced via `viewingClosedUid`.
   const [phase, setPhase]                 = useState('intro');
-  // Most recent git command (cherry-pick / restore) — shown in terminal scrollback
-  const [lastCommand, setLastCommand]     = useState(null);
+  // Cherry-pick lines accumulated during the current ticket — each fix the
+  // player chooses appends an entry, cleared when a new ticket loads.
+  const [pickHistory, setPickHistory]     = useState([]);
   // Closed tickets archive — successful or rejected, with their final push result
   const [closedTickets, setClosedTickets] = useState([]);
   // When set, the terminal + main triage panel switch to read-only display
@@ -991,7 +998,6 @@ export default function OnCall() {
   const inboxRef   = useRef(null);
   const ticketRef  = useRef(null);
   const doneRef    = useRef(null);
-  const gitTagRef  = useRef(null);
   const gitLogRef  = useRef(null);
   const gitDiffRef = useRef(null);
 
@@ -1009,6 +1015,11 @@ export default function OnCall() {
       setLoadKey(k => k + 1);
     }
   }, [activeUid, viewingClosedUid, phase]);
+  // Cherry-pick lines belong to a specific ticket: drop them whenever the
+  // active ticket changes (incl. transitions to null on auto-ship).
+  useEffect(() => {
+    setPickHistory([]);
+  }, [activeUid]);
 
   const viewingClosed = useMemo(
     () => closedTickets.find(c => c.ticket.uid === viewingClosedUid) || null,
@@ -1016,24 +1027,14 @@ export default function OnCall() {
   );
 
   // Per-stack "draws still possible" count: the candidate currently shown plus
-  // every fix still queued in the pool. Drives the StackPoolList readout
-  // and the stage-impossible shift-end check.
+  // every fix still queued in the pool. Surfaces as the "-n" appendix on each
+  // fix candidate's tag.
   const usesRemaining = useMemo(() => {
     const out = {};
     STACK_KEYS.forEach(s => {
       out[s] = (hand[s] ? 1 : 0) + (pool[s]?.length || 0);
     });
     return out;
-  }, [hand, pool]);
-
-  // Visible count of legendaries still in the player's deck (candidates + pool).
-  const legendaryRemaining = useMemo(() => {
-    let n = 0;
-    STACK_KEYS.forEach(s => {
-      if (hand[s]?.legendary) n++;
-      (pool[s] || []).forEach(c => { if (c.legendary) n++; });
-    });
-    return n;
   }, [hand, pool]);
 
   function startShift() {
@@ -1062,7 +1063,7 @@ export default function OnCall() {
     setStrikes(3);
     setResolved(0);
     setMercyArmed(false);
-    setLastCommand(null);
+    setPickHistory([]);
     setClosedTickets([]);
     setViewingClosedUid(null);
     setHost(shiftHost);
@@ -1102,11 +1103,14 @@ export default function OnCall() {
     const newHand = { ...hand, [stack]: nextCard };
     setPool(newPool);
     setHand(newHand);
-    setLastCommand({
-      cmd: `git cherry-pick ${card.sha}`,
-      note: `${STACKS[card.stack].name}: ${card.description}`,
-      kind: 'pick',
-    });
+    setPickHistory(prev => [
+      ...prev,
+      {
+        id: `${card.sha}-${prev.length}`,
+        cmd: `git cherry-pick ${card.sha}`,
+        note: `${STACKS[card.stack].name}: ${card.description}`,
+      },
+    ]);
 
     if (newDeployed.length < 3) {
       setDeployed(newDeployed);
@@ -1329,20 +1333,15 @@ export default function OnCall() {
         ),
       },
       {
-        title: '$ git tag -l',
-        ref: gitTagRef,
+        title: '$ git diff --staged',
+        ref: gitDiffRef,
         body: (
-          <>
-            <p style={{ margin: '0 0 8px' }}>
-              How many candidate fixes you can still draw, per stack. You start
-              with <b>{STACK_POOL_SIZE}</b> per stack ({STACK_KEYS.length * STACK_POOL_SIZE} total)
-              and they tick down as you cherry-pick.
-            </p>
-            <p style={{ margin: 0, color: C.faint }}>
-              The shift also ends if fewer than 3 fixes remain anywhere in your
-              pool — watch the counts.
-            </p>
-          </>
+          <p style={{ margin: 0 }}>
+            Your stage, in order. The <b style={{ color: C.success }}>3rd pick auto-ships</b> —
+            it scores against every requirement, ships the stage, and either
+            resolves the ticket or burns a strike. Cherry-picks are <b>final</b>:
+            no revert once a fix lands here.
+          </p>
         ),
       },
       {
@@ -1352,7 +1351,10 @@ export default function OnCall() {
           <>
             <p style={{ margin: '0 0 8px' }}>
               Your <b>fix candidates</b>: one per stack. Each shows its
-              short SHA, stack, value, and a one-line summary.
+              short SHA, stack tag with <b>-n</b> appendix (fixes still drawable
+              from that stack), value, and a one-line summary. The shift ends
+              when fewer than 3 fixes remain anywhere in your pool — watch
+              those counts.
             </p>
             <p style={{ margin: '0 0 8px' }}>
               <b style={{ color: C.warning }}>★ sequence bonus</b> means
@@ -1366,18 +1368,6 @@ export default function OnCall() {
               Tap a fix to cherry-pick it into the stage.
             </p>
           </>
-        ),
-      },
-      {
-        title: '$ git diff --staged',
-        ref: gitDiffRef,
-        body: (
-          <p style={{ margin: 0 }}>
-            Your stage, in order. The <b style={{ color: C.success }}>3rd pick auto-ships</b> —
-            it scores against every requirement, ships the stage, and either
-            resolves the ticket or burns a strike. Cherry-picks are <b>final</b>:
-            no revert once a fix lands here.
-          </p>
         ),
       },
       {
@@ -1415,7 +1405,7 @@ export default function OnCall() {
     ];
   }, [ticket]);
 
-  const tutorialActive = phase === 'playing' && !tutorialDismissed && loadStep >= 3 && !!ticket;
+  const tutorialActive = phase === 'playing' && !tutorialDismissed && loadStep >= 2 && !!ticket;
 
   useEffect(() => {
     if (!tutorialActive) return undefined;
@@ -1549,21 +1539,33 @@ export default function OnCall() {
               <ClosedView entry={viewingClosed} />
             ) : phase !== 'over' && (
               <>
-                {/* The terminal "boots" three diagnostic commands when a ticket
+                {/* The terminal "boots" two diagnostic commands when a ticket
                     loads: each line types itself in real time, then the
                     corresponding output snaps in before the next command
                     starts. loadStep drives the gating; loadKey forces a fresh
                     typewriter run on every ticket switch. */}
-                <div ref={gitTagRef}>
+                <div ref={gitDiffRef}>
                   <TerminalPrompt
-                    command={`git tag -l 'fix-*-pending' | awk -F- '{print $2}' | uniq -c`}
-                    comment="placements remaining per stack"
+                    command="git diff --staged HEAD~3..HEAD"
+                    comment={
+                      !ticket ? 'no ticket selected · pick one from the inbox' :
+                      deployed.length === 0 ? 'nothing staged' :
+                      deployed.length < 3 ? `${deployed.length}/3 staged · the 3rd pick auto-ships` :
+                      '3/3 staged'
+                    }
                     typing={loadStep === 0}
                     typingKey={loadKey}
                     onTyped={() => setLoadStep(s => (s < 1 ? 1 : s))}
                   />
                   {loadStep >= 1 && (
-                    <StackPoolList usesRemaining={usesRemaining} legendaryRemaining={legendaryRemaining} />
+                    <div style={{ padding: '0 10px' }}>
+                      <DeployPackage
+                        deployed={deployed}
+                        preview={preview}
+                        blocked={ticket?.blocked}
+                        phase={phase}
+                      />
+                    </div>
                   )}
                 </div>
 
@@ -1583,6 +1585,7 @@ export default function OnCall() {
                             key={s}
                             stack={s}
                             card={hand[s]}
+                            remaining={usesRemaining[s] ?? 0}
                             blocked={ticket && s === ticket.blocked}
                             deployFull={deployed.length >= 3}
                             deployed={deployed}
@@ -1595,34 +1598,15 @@ export default function OnCall() {
                   </div>
                 )}
 
-                {loadStep >= 2 && <ScrollbackLine command={lastCommand} />}
-
-                {loadStep >= 2 && (
-                  <div ref={gitDiffRef}>
-                    <TerminalPrompt
-                      command="git diff --staged HEAD~3..HEAD"
-                      comment={
-                        !ticket ? 'no ticket selected · pick one from the inbox' :
-                        deployed.length === 0 ? 'nothing staged' :
-                        deployed.length < 3 ? `${deployed.length}/3 staged · the 3rd pick auto-ships` :
-                        '3/3 staged'
-                      }
-                      typing={loadStep === 2}
-                      typingKey={loadKey}
-                      onTyped={() => setLoadStep(s => (s < 3 ? 3 : s))}
-                    />
-                    {loadStep >= 3 && (
-                      <div style={{ padding: '0 10px' }}>
-                        <DeployPackage
-                          deployed={deployed}
-                          preview={preview}
-                          blocked={ticket?.blocked}
-                          phase={phase}
-                        />
-                      </div>
-                    )}
-                  </div>
-                )}
+                {loadStep >= 2 && pickHistory.map((entry, i) => (
+                  <TerminalPrompt
+                    key={entry.id}
+                    command={entry.cmd}
+                    comment={entry.note}
+                    typing={i === pickHistory.length - 1}
+                    typingKey={entry.id}
+                  />
+                ))}
               </>
             )}
 
@@ -2819,129 +2803,6 @@ function TerminalPrompt({ command, comment, tone, onClick, disabled, typing, typ
     );
   }
   return <div style={{ ...base, padding: '10px 14px 4px' }}>{inner}</div>;
-}
-
-// Scrollback echo line — shows the most recent git command that was run.
-// Persists until the next interaction replaces it.
-function ScrollbackLine({ command }) {
-  if (!command) return null;
-  return (
-    <div style={{
-      padding: '2px 14px 4px',
-      fontSize: '0.65rem',
-      fontFamily: "'JetBrains Mono', monospace",
-      display: 'flex',
-      alignItems: 'baseline',
-      gap: '6px',
-      opacity: 0.85,
-    }}>
-      <span style={{ color: C.faint }}>›</span>
-      <span style={{ color: C.termPrompt, fontWeight: 600 }}>
-        {command.cmd}
-      </span>
-      <span style={{ color: C.faint, marginLeft: 'auto', fontStyle: 'italic' }}>
-        # {command.note}
-      </span>
-    </div>
-  );
-}
-
-// Per-stack pool bar — shown in the terminal (engineer's resources)
-// Per-stack pool — shown as terminal command output (uniq -c style).
-function StackPoolList({ usesRemaining, legendaryRemaining }) {
-  return (
-    <div style={{
-      padding: '4px 14px 10px',
-      fontSize: '0.72rem',
-      fontFamily: "'JetBrains Mono', monospace",
-      borderBottom: `1px solid ${C.termBorder}`,
-    }}>
-      {/* legendaries-remaining readout — sits above the per-stack counts so the
-          player can plan rescues. Goes faint when none are left in the deck. */}
-      <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: '12px',
-        padding: '1px 0 4px',
-        lineHeight: 1.4,
-      }}>
-        <span style={{
-          color: legendaryRemaining > 0 ? C.legendary : C.faint,
-          fontVariantNumeric: 'tabular-nums',
-          textAlign: 'right',
-          minWidth: '24px',
-          fontWeight: 700,
-        }}>
-          {legendaryRemaining}
-        </span>
-        <span style={{
-          color: legendaryRemaining > 0 ? C.legendary : C.faint,
-          fontWeight: 700,
-          fontSize: '0.7rem',
-          letterSpacing: '0.04em',
-        }}>
-          legendary
-        </span>
-        {legendaryRemaining === 0 && (
-          <span style={{
-            color: C.faint,
-            fontSize: '0.6rem',
-            fontStyle: 'italic',
-            letterSpacing: '0.05em',
-            marginLeft: '4px',
-          }}>
-            none in deck
-          </span>
-        )}
-      </div>
-      {STACK_KEYS.map(s => {
-        const remaining = usesRemaining[s] ?? 0;
-        const isLow = remaining > 0 && remaining <= 3;
-        const isDead = remaining === 0;
-        return (
-          <div key={s} style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: '12px',
-            opacity: isDead ? 0.5 : 1,
-            padding: '1px 0',
-            lineHeight: 1.4,
-          }}>
-            {/* count, right-aligned like `uniq -c` output */}
-            <span style={{
-              color: isDead ? C.faint : isLow ? C.warning : C.termText,
-              fontVariantNumeric: 'tabular-nums',
-              textAlign: 'right',
-              minWidth: '24px',
-              fontWeight: 700,
-            }}>
-              {remaining}
-            </span>
-            {/* stack label, lowercased like a real tag prefix */}
-            <span style={{
-              color: STACKS[s].color,
-              fontWeight: 700,
-              fontSize: '0.7rem',
-            }}>
-              {STACKS[s].name.toLowerCase()}
-            </span>
-            {isDead && (
-              <span style={{
-                color: C.danger,
-                fontSize: '0.6rem',
-                fontStyle: 'italic',
-                letterSpacing: '0.05em',
-                fontWeight: 700,
-                marginLeft: '4px',
-              }}>
-                exhausted
-              </span>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
 }
 
 // ── Compact one-line ticket row, shown in the inbox queue ──────────────
